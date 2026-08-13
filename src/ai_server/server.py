@@ -249,7 +249,17 @@ class AiServer:
         deed. Feeding raw CRLF gives the model a token stream it never saw in
         training, so it is normalised at the boundary.
         """
-        ocr = payload.get("ocr_text") or ""
+        # Type before content. `ocr_text: 123` used to reach `.strip()`, and the
+        # AttributeError was returned to the caller as a 500 carrying the
+        # internal exception class - a wrong status code and an information
+        # leak. Presence and emptiness were checked; the type never was.
+        ocr = payload.get("ocr_text")
+        if ocr is None:
+            ocr = ""
+        if not isinstance(ocr, str):
+            raise ValueError(
+                "ocr_text must be a string, not "
+                f"{type(ocr).__name__}")
         if not ocr.strip():
             raise ValueError("ocr_text is required and must not be empty")
         ocr = ocr.replace("\r\n", "\n").replace("\r", "\n")
@@ -457,7 +467,15 @@ class _Handler(BaseHTTPRequestHandler):
                 # reports `loaded: false`, which is the truth and is what the UI
                 # already knows how to display.
                 payload = self._read_json()
-                want = bool(payload.get("loaded", True))
+                # A real boolean, not anything truthy. `{"loaded": "banana"}`
+                # used to pass through `bool(...)`, report 200 and do nothing -
+                # a malformed model-lifecycle request answering "success" while
+                # the weights stayed exactly where they were.
+                want = payload.get("loaded", True)
+                if not isinstance(want, bool):
+                    raise ValueError(
+                        "loaded must be true or false, not "
+                        f"{type(want).__name__}")
                 before = self.app.engine.health().loaded
                 if want and not before:
                     self.app.engine.start()
