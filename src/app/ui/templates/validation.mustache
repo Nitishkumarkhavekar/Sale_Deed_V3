@@ -1,0 +1,62 @@
+{{! Validation Rules: one switch per rule, plus the thresholds that drive retry. }}
+<div class="page-head">
+  <h1>Validation Rules</h1><div class="spacer"></div>
+  <button class="btn-primary" id="btn-save-rules">Save</button>
+</div>
+
+<div class="notice info">
+  Every extracted value is checked against the OCR source. A value that cannot be
+  found there is flagged rather than exported - this is what catches misread
+  digits, which quantised inference makes more likely on Aadhaar, PAN and amounts.
+</div>
+
+<div class="card">
+  <h2>Rules</h2>
+  {{#rules}}
+  <div class="toggle-row">
+    <div class="meta">
+      <div class="name">{{name}} {{#flag}}<span class="badge mono">{{flag}}</span>{{/flag}}</div>
+      <div class="desc">{{description}}</div>
+    </div>
+    <label class="switch">
+      <input type="checkbox" data-rule="{{key}}" {{#enabled}}checked{{/enabled}} {{#locked}}disabled{{/locked}}>
+      <span class="track"></span>
+    </label>
+  </div>
+  {{/rules}}
+</div>
+
+<div class="card">
+  <h2>Thresholds</h2>
+  <div class="grid two">
+    <label class="field"><span>PAN coverage threshold (retry below this)</span>
+      <input type="number" step="0.05" min="0" max="1" id="pan-coverage" value="{{pan_coverage_threshold}}"></label>
+    <label class="field"><span>Minimum unmatched PANs before retry</span>
+      <input type="number" min="1" id="pan-min-unmatched" value="{{pan_min_unmatched}}"></label>
+    <label class="field"><span>Party count preferring split extraction</span>
+      <input type="number" min="1" id="pan-split" value="{{pan_split_threshold}}"></label>
+    <label class="field"><span>PAN&ndash;Aadhaar proximity (characters)</span>
+      <input type="number" min="50" id="proximity" value="{{proximity_chars}}"></label>
+  </div>
+  <div class="hint">
+    Coverage alone is unreliable when a deed contains only two PANs - the ratio can
+    only be 0, 0.5 or 1, so a single witness PAN would fail every such document
+    forever. The unmatched-count guard is what prevents that.
+  </div>
+</div>
+
+{{#stamp_value_disabled}}
+<div class="notice warn">
+  <strong>Stamp Value rules are inactive.</strong> The reference export contains
+  values that contradict the written formula - equal to the consideration on some
+  rows, a fraction of it on others, and greater than it on one - so
+  <span class="badge mono">SSV</span> and <span class="badge mono">WSV</span> are
+  implemented but switched off until the calculation is confirmed.
+</div>
+{{/stamp_value_disabled}}
+
+{{#retry_unavailable}}
+<div class="notice warn">
+  <strong>Extraction retry is unavailable.</strong> {{{retry_detail}}}
+</div>
+{{/retry_unavailable}}

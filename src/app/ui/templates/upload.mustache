@@ -1,0 +1,69 @@
+{{! Upload: drag & drop, operator identity, auto-detected totals, queue guard. }}
+<div class="page-head"><h1>Upload Sale Deed PDFs</h1></div>
+
+{{#queue_full}}
+<div class="notice warn">
+  <strong>Queue is full.</strong> {{queued_count}} of {{max_queued}} batches are already
+  waiting. Uploading is disabled until one finishes - this cap is what keeps disk
+  use bounded, since source PDFs are only removed after a batch completes.
+</div>
+{{/queue_full}}
+
+<div class="card">
+  <h2>PDF Upload</h2>
+  <div class="dropzone" id="dropzone">
+    <div style="font-size:30px;line-height:1;margin-bottom:8px">&#128196;</div>
+    <div class="big">Click to select PDF files or drag and drop</div>
+    <div class="hint">Multiple files supported &middot; PDF only &middot; sub-folders are included</div>
+  </div>
+  <div class="btn-row" style="margin-top:14px">
+    <button class="btn-violet" id="btn-browse" style="flex:1;justify-content:center"
+            {{#queue_full}}disabled{{/queue_full}}{{#no_upload}}disabled{{/no_upload}}
+            {{#no_upload}}title="{{upload_reason}}"{{/no_upload}}>&#11014; Upload PDFs</button>
+  </div>
+</div>
+
+<div class="grid two">
+  <div class="card">
+    <h2>Batch Details</h2>
+    <label class="field"><span>Username</span>
+      <input type="text" id="username" value="{{username}}" placeholder="Operator name"></label>
+    <label class="field"><span>Batch Name</span>
+      <input type="text" id="batch-name" value="{{suggested_name}}" placeholder="e.g. Batch_001"></label>
+    <div class="hint">Date and time are recorded automatically.</div>
+  </div>
+
+  <div class="card">
+    <h2>Selection</h2>
+    <dl class="kv">
+      <dt>Files Selected</dt><dd id="sel-count">{{selected_count}}</dd>
+      <dt>Total Size</dt><dd id="sel-size">{{selected_size}}</dd>
+      <dt>Queue Position</dt><dd>{{next_position}}</dd>
+      <dt>Maximum Files</dt><dd>{{max_files}}</dd>
+      <dt>Maximum Size</dt><dd>{{max_size}}</dd>
+    </dl>
+    {{#over_limit}}
+    <div class="notice danger" style="margin-top:12px">{{{over_limit_message}}}</div>
+    {{/over_limit}}
+  </div>
+</div>
+
+{{#has_selection}}
+<div class="card">
+  <h2>Files</h2>
+  <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+    <table><thead><tr><th class="num">#</th><th>File</th><th class="num">Size</th><th>Document ID</th></tr></thead>
+      <tbody>{{#files}}<tr><td class="num">{{index}}</td><td>{{name}}</td>
+        <td class="num">{{size}}</td><td class="mono">{{document_id}}</td></tr>{{/files}}</tbody>
+    </table>
+  </div>
+  {{#truncated}}<div class="hint">Showing first {{shown}} of {{selected_count}} files.</div>{{/truncated}}
+</div>
+{{/has_selection}}
+
+<div class="btn-row">
+  <button class="btn-violet" id="btn-add-batch"
+          {{^can_submit}}disabled{{/can_submit}}{{#no_upload}}disabled{{/no_upload}}
+          {{#no_upload}}title="{{upload_reason}}"{{/no_upload}}>Add Batch</button>
+  <button id="btn-clear">Clear</button>
+</div>

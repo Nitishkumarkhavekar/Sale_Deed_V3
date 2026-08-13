@@ -1,0 +1,64 @@
+{{! Help: remark codes, processing flow, FAQs. }}
+<div class="page-head"><h1>Help</h1></div>
+
+<div class="card">
+  <h2>Remark Codes</h2>
+  <p class="muted" style="margin-top:0">
+    These appear in the two remarks columns of the export - one for the document,
+    one for each party.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Code</th><th>Meaning</th><th>What it means for you</th></tr></thead>
+      <tbody>
+      {{#flags}}
+        <tr>
+          <td><span class="badge mono {{class}}">{{code}}</span></td>
+          <td>{{meaning}}</td>
+          <td class="script">{{action}}</td>
+        </tr>
+      {{/flags}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Processing Flow</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Stage</th><th>What happens</th><th>If it fails</th></tr></thead>
+      <tbody>
+      {{#flow}}
+        <tr><td><b>{{stage}}</b></td><td class="script">{{what}}</td>
+          <td class="script">{{on_failure}}</td></tr>
+      {{/flow}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Document States</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>State</th><th>Meaning</th></tr></thead>
+      <tbody>
+      {{#states}}
+        <tr><td><span class="badge {{class}}">{{name}}</span></td><td class="script">{{meaning}}</td></tr>
+      {{/states}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Questions</h2>
+  {{#faqs}}
+  <div class="collapsible" data-collapsible>
+    <div class="head">&#9656; {{q}}</div>
+    <div class="panel muted">{{{a}}}</div>
+  </div>
+  <div style="height:10px"></div>
+  {{/faqs}}
+</div>

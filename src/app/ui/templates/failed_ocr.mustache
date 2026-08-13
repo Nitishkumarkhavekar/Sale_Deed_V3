@@ -1,0 +1,124 @@
+{{! Failed OCR: every document whose OCR stage failed, with a rerun for one
+    file and a rerun for all of them.
+
+    Rerunning does not OCR anything here. It returns the document to PENDING and
+    the normal runner claims it through the same stage every other document
+    uses - so a retried file follows the identical path to extraction,
+    translation and validation, and there is no second OCR implementation that
+    could drift from the first. }}
+<div class="page-head">
+  <h1>Failed OCR</h1><div class="spacer"></div>
+  <span class="pill">
+    <span class="dot {{#running}}busy{{/running}}{{^running}}off{{/running}}"></span>
+    <span id="failed-ocr-runner">{{#running}}Processing{{/running}}{{^running}}Idle{{/running}}</span>
+  </span>
+</div>
+
+{{#db_offline}}
+<div class="notice danger">
+  <strong>Database unreachable.</strong> The failed-OCR list cannot be read until
+  the connection is restored.
+</div>
+{{/db_offline}}
+
+{{#none_failed}}
+<div class="card">
+  <div class="empty">No document has failed OCR.</div>
+</div>
+{{/none_failed}}
+
+{{#has_failures}}
+<div class="card tight">
+  <div class="row-between">
+    <div>
+      <h2 style="margin:0">{{total}} document{{plural}} failed OCR</h2>
+      <div class="hint" style="margin-top:4px">
+        Rerunning clears the retry count and sends the file back through OCR,
+        then on through the rest of the pipeline if it succeeds.
+      </div>
+    </div>
+    <div class="btn-row">
+      {{! Carries the batch the page is scoped to. Without it "Rerun All" showed
+          this batch's count and requeued every batch's failures. }}
+      <button class="btn-warn" id="btn-rerun-all"
+              data-batch-id="{{batch_id}}">Rerun All OCR ({{total}})</button>
+      <button id="btn-revalidate-all"
+              data-batch-id="{{batch_id}}">Revalidate all</button>
+      <button id="btn-export-corrupted"
+              data-batch-id="{{batch_id}}">Export corrupted report</button>
+      <button id="btn-refresh-failed">Refresh</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table class="failed-ocr">
+      <thead>
+        <tr>
+          <th style="width:28px">
+            <input type="checkbox" id="chk-all-failed" title="Select all on this page">
+          </th>
+          <th>File</th>
+          <th>Batch</th>
+          <th class="num">Pages</th>
+          <th class="num">Size</th>
+          <th>Status</th>
+          <th>PDF check</th>
+          <th class="num">Attempts</th>
+          <th>Reason</th>
+          <th>Failed at</th>
+          <th class="num">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{#documents}}
+        <tr data-document-pk="{{document_pk}}">
+          <td><input type="checkbox" class="chk-failed" value="{{document_pk}}"></td>
+          <td class="mono">{{source_filename}}</td>
+          <td>{{batch_name}}</td>
+          <td class="num">{{pages}}</td>
+          <td class="num">{{size}}</td>
+          <td><span class="badge danger">{{status_label}}</span></td>
+          {{! The validator's verdict on the file itself. "PDF fine - processing
+              failed" is the most useful thing this column says: it stops an
+              operator hunting for a corrupt file that does not exist. }}
+          <td>
+            <span class="badge {{validation_class}}">{{validation_label}}</span>
+            {{#corrupted_pages}}<div class="hint">pages {{corrupted_pages}}</div>{{/corrupted_pages}}
+          </td>
+          <td class="num">{{attempts}}</td>
+          {{! The whole reason, not a truncation: deciding whether a rerun is
+              worth the GPU time needs what actually went wrong. }}
+          <td class="reason">{{reason}}</td>
+          <td class="muted">{{failed_at}}</td>
+          <td class="num">
+            {{! A damaged file fails identically on a retry, so the honest
+                action there is Revalidate - check it again once it has been
+                repaired or replaced. }}
+            {{#retryable}}
+            <button class="btn-primary btn-rerun-one"
+                    data-document-pk="{{document_pk}}">Rerun OCR</button>
+            {{/retryable}}
+            <button class="btn-revalidate" data-document-pk="{{document_pk}}"
+                    title="Check the file again after repairing or replacing it">Revalidate</button>
+            {{#is_corrupt}}
+            <button class="btn-open-file" data-path="{{source_filename}}"
+                    title="Open the folder containing this file">Open location</button>
+            {{/is_corrupt}}
+          </td>
+        </tr>
+      {{/documents}}
+      </tbody>
+    </table>
+  </div>
+  {{> pager}}
+</div>
+
+<div class="card tight">
+  <div class="btn-row">
+    <button class="btn-primary" id="btn-rerun-selected" disabled>Rerun Selected</button>
+    <span class="hint" id="selected-count">No files selected.</span>
+  </div>
+</div>
+{{/has_failures}}

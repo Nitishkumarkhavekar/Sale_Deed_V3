@@ -1,0 +1,260 @@
+Tech Stack
+
+App:
+- Python
+- PySide6
+- Pystache
+
+App AI Server:
+- Python that manages all 3 models, auto-batch, and auto-serve on request.
+
+DB:
+- Choose a DB that acts as app data (PostgreSQL, SQLite).
+
+## User Workflow
+
+Upload all PDFs (prompt the user for username and batch name. Date/time should be taken automatically, number of files should be detected automatically. The user can upload new files as a new batch, but only a maximum of 4 queued batches. This helps the application continue one batch after another. If the current batch finishes, the user can upload a new batch, and this helps in storage.)
+
+- User can just Start or Stop.
+
+- User can check batch status in the dashboard with a list of batches (5 pagination) with current status:
+  - Batch OCR with count progress and %
+  - Extracting count with %
+  - Translating count with %
+  - Completed count / Failed count
+  - Batch completed, etc.
+
+- User can download CSV with remarks (there are 2 remarks columns including model confidence & other flags, and other 40 columns for more info. Always refer to example file:
+  `saledeed main\refering docs\example.csv`)
+
+Each Stage (Batch-wise)
+
+Within the batch, if any process fails:
+
+- OCR will be tried only once.
+- LLM checks confidence and tries once again.
+- Refer:
+  `saledeed main\refering docs\INFERENCE_PIPELINE.md`
+
+If any stage fails, mark that `document_id` as failed in that batch.
+If passed, mark it as processed.
+
+OCR:
+- Each PDF → Images → OCRed (Surya OCR) → Saved to DB (File name and address only, no images).
+
+Extract:
+- Each OCR → LLM Extract → Data validation and verification.
+- Cross-verify with OCR.
+- Apply regex on registration fee and match.
+- Retry one last time if not satisfied, too much missing data, wrong data, or low confidence.
+- Save to DB.
+
+Translate:
+- Each structured data.
+- Only Kannada values will be translated using IndicTrans.
+- Names will be transliterated, and one mapping will be used to achieve something like Kannada "EN" → "N", etc.
+- Addresses will be directly translated using IndicTrans, which is faster.
+
+Save to DB & Clear Batch:
+- Delete PDF files from storage after batch completion.
+- Check that whole data is continuously committed to the DB for the full batch during the entire process.
+
+UI
+(Web search for the India Government theme and coloring, and download the Income Tax logo if possible.)
+
+Left Navigation Bar + Right Main Window
+
+Dashboard (Navigation bar first item)
+
+Top Bar:
+- Settings
+- Languages selected
+- Start (On click, starts the first batch in queue.)
+- Stop (Will pause the process after saving the progress. It can be resumed by Start again.)
+- AI Server active or not.
+
+Body:
+- Active batch
+- Queued batches (Pagination: 5)
+
+Bottom Division:
+Shows list of completed batches (Pagination: 5) with buttons:
+- View (Opens a popup window while fetching that batch. Shows recent 10 results with pagination. For more, display all 42 columns in table form.)
+- Download CSV
+- Download Failed CSV (Only the failed list in that batch.)
+
+Settings (Navigation bar second item)
+
+- Language selection <string>
+  (When OCR is done, if language is not selected and OCR contains more of those characters, give a warning to users and don't allow other languages in OCR before saving to DB.)
+
+- Stamp value multiplier <int>
+  (An extra amount like 50 or 100 based on financial year by user is multiplied with registration fee and will be called stamp value in CSV.)
+
+- LLM model type <string>
+  (Medium = 4B, High = 12B)
+
+- OCR quality <int>
+  (DPI)
+
+- Prompt <string>
+  (Full current prompt. Anytime a user tries to modify the prompt, ask for confirmation once. Hide prompt by default, and clicking "Expand" should expand it.)
+
+- Check for updates
+  (Will fetch GitHub repo URL.)
+
+- Batch start <string>
+  (Manual, Auto: Auto continues to process the next queued batch after the current batch completion after a 1-minute cooldown.)
+
+
+### Validation Rules
+
+
+
+This page should list all validation rules with a toggle button.
+
+- PAN verification method:
+  When LLM replies with parties and PANs, check how many matched.
+  Then in remarks (42-column person details remarks), add code "PM" in the respective row.
+  If LLM extracts a PAN that is not present, discard it.
+  (Be careful: PAN can be written with any enclosures or spaces.)
+  If OCR has more PANs, list all in remarks (15th column remarks).
+
+- Registration fee:
+  Match it with OCR.
+  It should not be more than Sale Consideration.
+  If greater, use code "SSV".
+  If registration fee does not match OCR, use code "WSV".
+  (Check OCR example; it is mentioned as Registration Fee or Nondani Shulk. In output, rename it as Stamp Value.)
+  (Use codes in the 42-column remarks.)
+
+- Check and match Sale Consideration with OCR.
+  (Has Indian numbering.)
+  Use code "WSC". (42-column)
+
+- Check Aadhaar numbers with OCR.
+  If they don't match (may contain enclosures and spaces), use code "WAN". (42-column)
+
+- Check Transaction Date from OCR.
+  If not found, use code "WTD".
+
+### Help
+This page shows:
+- All flags and reminder codes used in the remarks column to warn or indicate data quality.
+- Other help/explanation to use the app.
+
+## User Reminder
+I'm unable to attach most of the files, so ask before proceeding if you find something missing.
+
+
+## Notes
+
+- User-selected languages help to control IndicTrans input/output, control or remove OCR noise, verify Gemma LLM output token cross-language leak, etc.
+
+- In all stages, concurrency in processing should be managed automatically depending on VRAM headroom (leave 8% GPU free to avoid OOM).
+
+- Choose a DB that the app handles locally as app data (backup in the backup folder where the app resides). Rotate backup every year, and last year's backup will be saved after clearing that year's data.
+  (OCR will be deleted after 1 month. No backup needed.)
+
+- Check overall DB health and queries to avoid app slowness as DB grows.
+
+- Any logs: Create a toggle in `.env`. If active, the app should produce debug logs. Otherwise, disable all logs.
+
+- Model performed best at temperature "0.0".
+
+- When PAN count in OCR exceeds 30, use the split method mentioned in the inference file.
+
+- Create a small script that cleans OCR noise. Before that, test how OCR is produced by Surya OCR, and each new page should be mentioned.
+
+- There are 2 inference files in:
+  `saledeed main\refering docs`
+  The current latest model is v6.9.
+  Download anytime and test with many sale deeds, then inspect how accurately data is extracted.
+
+- Do All type of  testing.
+
+- Keep modular AI server (simple script to start and a single script to manage all 3 models and serve on request) and main app.
+
+- Analyze sale deed PDF and JSON schema, and read the prompt. You will understand the context. Then you can add things that I missed, or analogies, or things that help deliver high accuracy data, and always update memory, TODO, and task history.
+
+
+## Additional Requirements
+
+The another Page create a page Of water mark remover 
+
+-  the uploaded PDF contains watermarks, remove all visible watermarks while preserving the original document's content, formatting, fonts, images, tables, layout, and quality.
+- Ensure that no text or graphics are altered, cropped, or distorted during the process.
+- Return the cleaned PDF in the same page order and with the highest possible quality.
+- If a watermark overlaps with text or images, reconstruct the affected content accurately so the document appears as if it never contained a watermark.
+- I will upload PDF files that contain watermarks. Please remove all visible watermarks while preserving the original document's content, formatting, fonts, images, tables, layout, and quality. Ensure that no text or graphics are altered, cropped, or distorted during the process. Return the cleaned PDF in the same page order and with the highest possible quality. If a watermark overlaps with text or images, reconstruct the affected content accurately so the document appears as if it never contained a watermark 
+
+
+Translate
+
+- The translation language should be selectable by the user.
+- The currently selected translation language should always be displayed in the application.
+- Add support for multiple languages for translation.
+
+
+
+Validation Rules
+
+Stamp Value Validation
+
+- Add a validation method for the Stamp Value column.
+- The sum of all relevant columns must be equal to the Stamp Value from the single sale deed.
+- If the calculated total does not match the Stamp Value, mark it according to the validation rules.
+
+Aadhaar Verification
+
+- Aadhaar fetching should be verified twice before saving the data.
+- Perform a second verification pass to ensure maximum accuracy.
+
+PAN Verification
+
+- PAN verification should also be performed twice before saving the extracted data.
+
+Processed File Status
+
+- Every processed document should contain a processing status.
+- Use:
+  - "OCR_P" for successfully processed OCR files.
+  - "OCR_F" for failed OCR files.
+
+UI
+
+- The frontend theme must follow the official UX4G Design System.
+
+Dashboard
+
+- Add paging/pagination features wherever applicable throughout the application.
+
+Batch Upload
+
+- Maximum files allowed per batch: 1000.
+- Files exceeding this limit must not be accepted.
+
+Notes
+
+- Maximum total upload size must be 25 GB.
+
+- Develop the solution using advanced, production-ready coding practices.
+  Include all necessary libraries, frameworks, dependencies, and modern techniques required for efficient, scalable, and maintainable code.
+  Use the most suitable algorithms, design patterns, error handling, logging, validation, security measures, optimization techniques, and asynchronous processing where applicable.
+  Ensure the code is modular, well-documented, follows industry best practices, and is compatible with the latest stable versions of the required libraries and frameworks.
+  Automatically import and configure all required packages, and provide a complete, runnable implementation with clean, reusable architecture.
+
+- The LLM already exists inside my project folder.
+  Do not download any LLM.
+  Fetch and use only the existing trained LLM available in the project.
+
+- The GPU should only be used by the AI models.
+
+- Add support for multiple translation languages in the application.
+
+- Translation language should always be visible to the user.
+
+- Pagination should be implemented throughout the application wherever required.
+
+
+

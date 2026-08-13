@@ -1,0 +1,122 @@
+{{! Settings. The prompt is collapsed by default and editing asks for confirmation:
+    it is the single largest lever on extraction quality and the easiest to break. }}
+<div class="page-head">
+  <h1>Settings</h1><div class="spacer"></div>
+  <button class="btn-primary" id="btn-save-settings">Save</button>
+</div>
+
+{{#saved}}<div class="notice ok">Settings saved.</div>{{/saved}}
+
+<div class="grid two">
+  <div class="card">
+    <h2>Language</h2>
+    <label class="field"><span>Devanagari documents</span>
+      <select id="devanagari-as">
+        {{#devanagari_languages}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/devanagari_languages}}
+      </select></label>
+    <div class="hint">
+      Kannada, Telugu, Tamil and the rest each have their own script, so they
+      identify themselves. Devanagari does not - Hindi and Marathi share it.
+      <strong>Detect automatically</strong> reads each field and decides from the
+      vocabulary and from letters Hindi does not use, falling back to Hindi where
+      a field gives no evidence. Choose a language outright if every deed you
+      process is from one jurisdiction.
+      <br><br>
+      Names are transliterated and addresses translated - different operations.
+      OCR needs no setting: the recognition model is multilingual and detects
+      script by itself.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Processing</h2>
+    <label class="field"><span>OCR Quality (DPI)</span>
+      <select id="ocr-dpi">
+        {{#dpis}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/dpis}}
+      </select></label>
+    <label class="field"><span>Batch Mode</span>
+      <select id="batch-mode">
+        {{#batch_modes}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/batch_modes}}
+      </select></label>
+    <div class="hint">Auto mode starts the next queued batch {{cooldown}}s after one finishes.</div>
+  </div>
+
+  <div class="card">
+    <h2>Model</h2>
+    <label class="field"><span>LLM Model</span>
+      <select id="llm-mode">
+        {{#llm_modes}}<option value="{{value}}" {{#selected}}selected{{/selected}} {{#unavailable}}disabled{{/unavailable}}>{{label}}</option>{{/llm_modes}}
+      </select></label>
+    <dl class="kv">
+      <dt>Loaded</dt><dd class="mono">{{model_name}}</dd>
+      <dt>Precision</dt><dd>{{quantisation}}</dd>
+      <dt>Context</dt><dd>{{n_ctx}} tokens ({{prompt_capacity}} usable)</dd>
+      <dt>Device</dt><dd>{{device}}</dd>
+    </dl>
+    {{#lossy_model}}
+    <div class="notice warn" style="margin-top:12px">
+      This is a quantised copy of the trained model. Output is not guaranteed
+      identical to full precision; validation cross-checks every extracted value
+      against the OCR source.
+    </div>
+    {{/lossy_model}}
+  </div>
+
+  <div class="card">
+    <h2>Stamp Value</h2>
+    <label class="field"><span>Stamp Value Multiplier</span>
+      <input type="number" min="0" step="1" id="stamp-multiplier" value="{{stamp_multiplier}}"></label>
+    {{#stamp_disabled}}
+    <div class="notice warn">
+      Stamp Value validation is inactive. The reference export contradicts the
+      written formula, so the field is carried through unchanged rather than
+      computed from a rule that cannot be confirmed.
+    </div>
+    {{/stamp_disabled}}
+  </div>
+</div>
+
+<div class="card">
+  <div class="collapsible" data-collapsible id="prompt-block">
+    <div class="head">&#9656; Extraction Prompt <span class="muted" style="font-weight:400">({{prompt_tokens}} tokens)</span></div>
+    <div class="panel">
+      <div class="notice warn">
+        <strong>Changing this alters extraction behaviour.</strong> The model was
+        finetuned on this exact wording; edits can reduce accuracy or break the
+        output schema in ways that are not obvious from a single document.
+      </div>
+      <textarea id="prompt" rows="16" readonly>{{prompt}}</textarea>
+      <div class="btn-row" style="margin-top:10px">
+        <button id="btn-edit-prompt">Edit Prompt</button>
+        <button id="btn-reset-prompt">Restore Default</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="grid two">
+  <div class="card">
+    <h2>Diagnostics</h2>
+    <div class="toggle-row">
+      <div class="meta"><div class="name">Debug Logs</div>
+        <div class="desc">Verbose structured logging. Off by default - the handler is not installed at all, so it costs nothing when disabled.</div></div>
+      <label class="switch"><input type="checkbox" id="debug-logs" {{#debug_logs}}checked{{/debug_logs}}><span class="track"></span></label>
+    </div>
+    <div class="toggle-row">
+      <div class="meta"><div class="name">Database</div><div class="desc mono">{{db_summary}}</div></div>
+      <span class="badge {{db_class}}">{{db_state}}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Updates</h2>
+    <label class="field"><span>Repository URL</span>
+      <input type="text" id="update-url" value="{{update_url}}" placeholder="https://github.com/..."></label>
+    <div class="btn-row"><button id="btn-check-updates">Check for Updates</button></div>
+    <div class="hint">Current version {{app_version}}</div>
+  </div>
+</div>
+
+{{! Machine details - moved here from the dashboard. The partial owns the
+     markup; `_settings` supplies its keys via `_machine()`. }}
+{{> machine_details}}

@@ -1,0 +1,35 @@
+{{! Machine Details - what the application detected and what it chose to run.
+
+     A partial, not a page: it was embedded in the dashboard and is now shown on
+     Settings. Its model comes from `AppService._machine()`, whose keys are
+     spread flat into whichever page renders it, so including this partial is
+     the whole of what a page has to do.
+
+     `_machine()` reads cached probes only - no request is made to render it, so
+     showing it on a different page adds no fetching. }}
+<div class="card tight">
+  <h2>Machine</h2>
+  <div class="grid four">
+    <div class="stat"><div class="value">{{gpu_name}}</div><div class="label">GPU (inference only)</div></div>
+    <div class="stat"><div class="value">{{vram}}</div><div class="label">VRAM free / total</div></div>
+    <div class="stat"><div class="value">{{ram}}</div><div class="label">RAM free / total</div></div>
+    <div class="stat {{pressure_class}}"><div class="value">{{pressure}}</div><div class="label">Resource pressure</div></div>
+  </div>
+  <div class="grid four" style="margin-top:14px">
+    <div class="stat"><div class="value">{{model_name}}</div><div class="label">Model</div></div>
+    <div class="stat"><div class="value">{{quantisation}}</div><div class="label">Precision</div></div>
+    <div class="stat"><div class="value">{{disk_free}}</div><div class="label">Disk free</div></div>
+    <div class="stat"><div class="value">{{db_backend}}</div><div class="label">Database</div></div>
+  </div>
+  {{#lossy_model}}
+  <div class="notice warn" style="margin:14px 0 0">
+    <strong>{{quantisation}}</strong> is a quantised copy of the trained model, so
+    output is not guaranteed identical to full precision. Exact-digit fields
+    (Aadhaar, PAN, amounts) are the most affected - validation cross-checks every
+    such value against the OCR source and flags anything it cannot find.
+  </div>
+  {{/lossy_model}}
+  {{#excluded_adapters}}
+  <div class="hint" style="margin-top:10px">Excluded from inference: {{.}}</div>
+  {{/excluded_adapters}}
+</div>

@@ -1,0 +1,62 @@
+{{! Batch Details popup: summary, recent documents across all 42 export columns. }}
+<div class="modal-backdrop" data-modal-backdrop>
+  <div class="modal">
+    <header>
+      <h2>Batch: {{name}}</h2>
+      <span class="badge {{state_class}}">{{state}}</span>
+      <div class="spacer" style="flex:1"></div>
+      <button data-modal-close>&times;</button>
+    </header>
+
+    <div class="modal-body">
+      <div class="grid four" style="margin-bottom:18px">
+        <div class="stat"><div class="value">{{total}}</div><div class="label">Total Files</div></div>
+        <div class="stat ok"><div class="value">{{completed}}</div><div class="label">Completed</div></div>
+        <div class="stat warn"><div class="value">{{needs_review}}</div><div class="label">Needs Review</div></div>
+        <div class="stat danger"><div class="value">{{failed}}</div><div class="label">Failed</div></div>
+      </div>
+
+      <div class="grid two" style="margin-bottom:18px">
+        <dl class="kv">
+          <dt>Uploaded By</dt><dd>{{username}}</dd>
+          <dt>Created</dt><dd>{{created_at}}</dd>
+          <dt>Finished</dt><dd>{{finished_at}}</dd>
+        </dl>
+        <dl class="kv">
+          <dt>OCR</dt><dd><span class="badge {{ocr_class}}">{{ocr_status}}</span></dd>
+          <dt>Extraction</dt><dd><span class="badge {{extract_class}}">{{extract_status}}</span></dd>
+          <dt>Translation</dt><dd><span class="badge {{translate_class}}">{{translate_status}}</span></dd>
+        </dl>
+      </div>
+
+      <h2 style="font-size:14px;margin:0 0 10px">Recent Documents</h2>
+      {{#has_documents}}
+      {{! All 42 export columns are present; the container scrolls horizontally
+          rather than the page, so the shell layout never breaks. }}
+      <div class="table-wrap" style="max-height:46vh;overflow-y:auto">
+        <table>
+          <thead><tr>{{#columns}}<th>{{.}}</th>{{/columns}}</tr></thead>
+          <tbody>
+            {{#documents}}
+            <tr>{{#cells}}<td class="{{class}}">{{value}}</td>{{/cells}}</tr>
+            {{/documents}}
+          </tbody>
+        </table>
+      </div>
+      {{> pager}}
+      {{/has_documents}}
+      {{^has_documents}}
+      <div class="empty">No documents recorded for this batch.</div>
+      {{/has_documents}}
+    </div>
+
+    <footer>
+      <button class="btn-accent" data-export-batch="{{id}}">Download CSV</button>
+      {{#has_failed}}
+      <button data-export-failed="{{id}}">Download Failed CSV</button>
+      <button class="btn-secondary" data-reprocess-batch="{{id}}">Reprocess Failed</button>
+      {{/has_failed}}
+      <button data-modal-close>Close</button>
+    </footer>
+  </div>
+</div>

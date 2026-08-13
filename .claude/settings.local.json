@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($aws = \\(Get-Command aws -ErrorAction SilentlyContinue\\); if \\($aws\\) { \"aws: $\\($aws.Source\\)\"; aws --version } else { \"aws: not found\" }; $rclone = \\(Get-Command rclone -ErrorAction SilentlyContinue\\); if \\($rclone\\) { \"rclone: $\\($rclone.Source\\)\" } else { \"rclone: not found\" }; $py = \\(Get-Command python -ErrorAction SilentlyContinue\\); if \\($py\\) { \"python: $\\($py.Source\\)\"; python --version } else { \"python: not found\" })",
+      "PowerShell(python -c \"import boto3; print\\('boto3', boto3.__version__\\)\")",
+      "PowerShell(python \"d:\\\\saledeed v3\\\\AI server\\\\_r2_list.py\")",
+      "Bash(./SuryaOCR/venv_new/Scripts/python.exe -c \"import huggingface_hub,transformers; print\\('hub',huggingface_hub.__version__,'| transformers',transformers.__version__\\)\")",
+      "Bash(py -3.13 -)",
+      "Bash(py -3.13 -m pytest tests/ -q)",
+      "Bash(py -3.13 -c ' *)"
+    ]
+  }
+}

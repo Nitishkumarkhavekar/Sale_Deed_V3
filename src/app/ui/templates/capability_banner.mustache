@@ -1,0 +1,14 @@
+{{! Shown once above the page content when the system cannot do everything.
+    A disabled button with no explanation reads as a broken application, so the
+    reason is stated here rather than repeated beside every control.
+
+    Rendered from base.mustache on a full page load and prepended directly on a
+    content-only render, so it survives navigation either way. }}
+{{#degraded}}
+<div class="notice warn" id="capability-banner">
+  <strong>Some actions are unavailable.</strong>
+  <ul style="margin:6px 0 0 18px">
+    {{#capability_reasons}}<li>{{action}} - {{reason}}</li>{{/capability_reasons}}
+  </ul>
+</div>
+{{/degraded}}

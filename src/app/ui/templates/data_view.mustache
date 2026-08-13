@@ -1,0 +1,120 @@
+{{! Data View: search, filter, sort and page across every extracted document. }}
+<div class="page-head">
+  <h1>Data View</h1><div class="spacer"></div>
+  <button id="btn-refresh">Refresh</button>
+  <button class="btn-accent" id="btn-export-view"
+          {{#no_export}}disabled title="{{export_reason}}"{{/no_export}}>Download CSV</button>
+</div>
+
+<div class="card tight">
+  <div class="grid" style="grid-template-columns:2fr 1fr 1fr 1fr auto;align-items:end;gap:12px">
+    <label class="field" style="margin:0"><span>Search</span>
+      <input type="text" id="q" value="{{query}}" placeholder="Document ID, name, PAN or Aadhaar"></label>
+    <label class="field" style="margin:0"><span>Batch</span>
+      <select id="filter-batch">
+        <option value="">All batches</option>
+        {{#batches}}<option value="{{id}}" {{#selected}}selected{{/selected}}>{{name}}</option>{{/batches}}
+      </select></label>
+    <label class="field" style="margin:0"><span>Status</span>
+      <select id="filter-status">
+        {{#statuses}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/statuses}}
+      </select></label>
+    <label class="field" style="margin:0"><span>Sort</span>
+      <select id="sort">
+        {{#sorts}}<option value="{{value}}" {{#selected}}selected{{/selected}}>{{label}}</option>{{/sorts}}
+      </select></label>
+    <button class="btn-primary" id="btn-apply">Apply</button>
+  </div>
+</div>
+
+{{! Download. Its own batch selector rather than borrowing the filter above:
+    the filter offers "All batches", the export can only ever write one, and
+    the old button silently exported the most recent batch while the filter
+    read "All". A control that says one thing and does another is worse than
+    one that offers less. }}
+<div class="card">
+  <h2>Download</h2>
+
+  {{! Three explicit steps rather than one button that did all of it. The batch
+      starts unselected on purpose: defaulting to the newest and downloading it
+      is how an operator ends up with the wrong file and no reason to suspect
+      it. }}
+  <div class="grid" style="grid-template-columns:2fr 1fr;align-items:end;gap:12px">
+    <label class="field" style="margin:0"><span>1. Select batch to download</span>
+      <select id="download-batch">
+        <option value="">&mdash; Select a batch &mdash;</option>
+        {{#batches}}
+        <option value="{{id}}" data-name="{{name}}">{{label}}</option>
+        {{/batches}}
+      </select></label>
+    <label class="field" style="margin:0"><span>Rows to include</span>
+      <select id="download-scope">
+        <option value="all">All documents</option>
+        <option value="failed">Failed documents only</option>
+      </select></label>
+  </div>
+
+  <div class="grid" style="grid-template-columns:auto 1fr;align-items:center;gap:12px;margin-top:14px">
+    <button id="btn-choose-location">&#128193; 2. Choose download location</button>
+    <span class="mono muted" id="download-location">No location chosen &mdash; the default exports folder will be used.</span>
+  </div>
+
+  <div class="btn-row" style="margin-top:14px">
+    <button class="btn-violet" id="btn-download-batch" disabled
+            title="Select a batch first"
+            {{#no_export}}disabled title="{{export_reason}}"{{/no_export}}>
+      &#11015; 3. Download</button>
+    <span class="hint" id="download-status">Select a batch to begin.</span>
+  </div>
+
+  {{^batches}}
+  <div class="hint" style="margin-top:10px">There are no batches to download yet.</div>
+  {{/batches}}
+</div>
+
+<div class="card">
+  {{#has_rows}}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Document ID</th><th>Batch</th><th class="script">Party</th><th>Role</th>
+        <th>PAN</th><th>Aadhaar</th><th class="script">Property</th>
+        <th class="num">Consideration</th><th class="num">Stamp Value</th>
+        <th>Date</th><th>Status</th><th>Remarks</th><th></th>
+      </tr></thead>
+      <tbody>
+      {{#rows}}
+        <tr>
+          <td class="mono">{{document_id}}</td>
+          <td>{{batch_name}}</td>
+          <td class="script">{{person_name}}</td>
+          <td><span class="badge {{relation_class}}">{{relation}}</span></td>
+          <td class="mono">{{pan}}</td>
+          <td class="mono">{{aadhaar}}</td>
+          <td class="script">{{property_address}}</td>
+          <td class="num">{{consideration}}</td>
+          <td class="num">{{stamp_value}}</td>
+          <td>{{transaction_date}}</td>
+          <td><span class="badge {{state_class}}">{{state}}</span></td>
+          <td>{{#flags}}<span class="badge mono {{class}}">{{code}}</span> {{/flags}}</td>
+          <td><button data-view-document="{{document_pk}}">View</button></td>
+        </tr>
+      {{/rows}}
+      </tbody>
+    </table>
+  </div>
+  {{> pager}}
+  {{/has_rows}}
+  {{^has_rows}}
+  <div class="empty">
+    {{#query}}Nothing matches &ldquo;{{query}}&rdquo;.{{/query}}
+    {{^query}}No extracted data yet. Upload a batch and press Start.{{/query}}
+  </div>
+  {{/has_rows}}
+</div>
+
+<div class="hint">
+  One row per party, matching the export: document-level values repeat across each
+  party of the same deed. Aadhaar and PAN are stored and exported as text so
+  leading digits are never lost.
+</div>

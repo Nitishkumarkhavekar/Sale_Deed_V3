@@ -1,0 +1,48 @@
+# Sale Deed AI - application dependencies.
+#
+# Derived from what the code actually imports, not from what a general document
+# pipeline usually needs. Deliberately short: the AI server is standard library
+# only, and OCR and translation live in a separate virtual environment because
+# they pin `transformers==4.57.1` against everything here.
+#
+#     py -3.13 -m pip install -r requirements.txt
+#
+# Versions are pinned to what this project was tested against. Loosen them
+# deliberately, not by accident: `transformers` unpinned once resolved a major
+# version that removed an attribute Surya needs, and failed only after
+# downloading 1.4 GB of models.
+
+# -- desktop shell ----------------------------------------------------------
+# The window, the embedded browser and the channel to Python. Essentials and
+# Addons are separate distributions; `pip install PySide6` pulls both, but they
+# are listed explicitly so a partial install is visible rather than mysterious.
+PySide6-Essentials==6.11.1
+PySide6-Addons==6.11.1
+shiboken6==6.11.1
+
+# -- database ---------------------------------------------------------------
+# psycopg v3, never psycopg2: the DSN scheme is `postgresql+psycopg://` and
+# `postgresql://` alone silently resolves to psycopg2, which is not installed.
+SQLAlchemy==2.0.51
+psycopg==3.3.4
+alembic==1.18.5
+
+# -- rendering --------------------------------------------------------------
+# Logic-less templates for the UI. Anything needing a decision is computed in
+# Python and handed over as a plain value.
+pystache==0.6.8
+
+# -- documents --------------------------------------------------------------
+# PDF reading, rendering and watermark removal. Replaces Poppler and
+# Ghostscript, which this project does not use.
+PyMuPDF==1.28.0
+
+# -- transliteration --------------------------------------------------------
+# Proper nouns are rendered by rule, never by the translation model: a
+# sentence translator turns `ಲಕ್ಷ್ಮಿ ದೇವಿ` into "Goddess Lakshmi". Pure Python,
+# no model, no download.
+indic-transliteration==2.3.82
+
+# -- tests ------------------------------------------------------------------
+# Not needed to run the application; needed to trust it.
+pytest==9.1.1

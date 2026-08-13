@@ -1,0 +1,95 @@
+{{! PDF Processing: per-stage progress for the active batch, plus live controls. }}
+<div class="page-head">
+  <h1>PDF Processing</h1><div class="spacer"></div>
+  <span class="pill">
+    <span class="dot {{#running}}busy{{/running}}{{^running}}off{{/running}}"></span>{{runner_detail}}
+  </span>
+</div>
+
+{{#active}}
+<div class="card">
+  <h2>Current Batch: {{name}}</h2>
+
+  {{! The reference's headline: one wide bar with an explicit count and
+      percentage, above the per-stage detail. }}
+  <div class="progress-hero">
+    <span class="bar"><span style="width:{{overall_percent}}%"></span></span>
+    <span class="readout">{{overall_readout}}</span>
+  </div>
+
+  <div class="tiles" style="margin:16px 0 20px">
+    <div class="tile violet"><div class="value">{{total}}</div><div class="label">Total</div></div>
+    <div class="tile ok"><div class="value">{{completed}}</div><div class="label">Processed</div></div>
+    <div class="tile danger"><div class="value">{{failed}}</div><div class="label">Failed</div></div>
+    <div class="tile warn"><div class="value">{{needs_review}}</div><div class="label">Needs Review</div></div>
+    <div class="tile accent"><div class="value">{{in_queue}}</div><div class="label">In Queue</div></div>
+    <div class="tile"><div class="value">{{eta}}</div><div class="label">Remaining</div></div>
+  </div>
+
+  {{#stages}}
+  <div style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+      <span style="font-weight:600">{{label}}</span>
+      <span class="muted mono">{{done}} / {{total}}{{#failed}} &middot; {{failed}} failed{{/failed}}</span>
+    </div>
+    <span class="bar {{bar_class}}"><span style="width:{{percent}}%"></span></span>
+  </div>
+  {{/stages}}
+
+</div>
+{{/active}}
+{{^active}}
+<div class="card"><div class="empty">No batch is being processed.</div></div>
+{{/active}}
+
+<div class="card tight">
+  <h2>Controls</h2>
+  <div class="btn-row">
+    <button class="btn-ok" id="btn-start"
+            {{#running}}disabled{{/running}}{{#no_process}}disabled{{/no_process}}
+            {{#no_process}}title="{{process_reason}}"{{/no_process}}>&#9654; Start Processing</button>
+    <button id="btn-pause" {{^running}}disabled{{/running}}>Pause</button>
+    <button class="btn-stop" id="btn-stop" {{^running}}disabled{{/running}}>&#9632; Stop Processing</button>
+    {{! Goes to the Failed OCR page rather than acting here: a rerun is a
+        per-document decision, and the count says whether it is worth a look. }}
+    <button class="btn-warn" data-goto="failed_ocr"
+            {{^failed_ocr_count}}disabled title="No document has failed OCR"{{/failed_ocr_count}}>
+      &#8635; Rerun Failed OCR ({{failed_ocr_count}})</button>
+    <button class="btn-violet" data-goto="upload">Add Batch</button>
+  </div>
+  <div class="hint" style="margin-top:10px">
+    Pause lets in-flight documents finish before stopping. Progress is committed per
+    document, so resuming continues exactly where it stopped and never reprocesses
+    completed work.
+  </div>
+</div>
+
+{{#pressure_warning}}
+<div class="notice warn">
+  <strong>Resource pressure: {{pressure}}.</strong> {{{pressure_detail}}}
+</div>
+{{/pressure_warning}}
+
+{{#recent}}
+<div class="card">
+  <h2>Recently Finished</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Document</th><th>State</th><th class="num">Parties</th>
+        <th class="num">Consideration</th><th class="num">Confidence</th><th>Flags</th></tr></thead>
+      <tbody>
+      {{#documents}}
+        <tr>
+          <td class="mono">{{document_id}}</td>
+          <td><span class="badge {{state_class}}">{{state}}</span></td>
+          <td class="num">{{persons}}</td>
+          <td class="num">{{consideration}}</td>
+          <td class="num">{{confidence}}</td>
+          <td>{{#flags}}<span class="badge mono">{{.}}</span> {{/flags}}</td>
+        </tr>
+      {{/documents}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{/recent}}

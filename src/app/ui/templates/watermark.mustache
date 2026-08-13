@@ -1,0 +1,91 @@
+{{! Watermark Remover. The scope note is deliberate and prominent: overlay
+    watermarks come off losslessly, but content hidden beneath a raster stamp
+    cannot be recovered without inventing it. Saying so up front is the only
+    honest option for documents that carry legal weight. }}
+<div class="page-head"><h1>Watermark Remover</h1></div>
+
+<div class="notice info">
+  <strong>What this can and cannot do.</strong> Watermarks added as a separate
+  layer - text, annotations or optional-content groups - are removed
+  <strong>losslessly</strong>: the page keeps its original fonts, tables, images
+  and layout exactly. A watermark burned into a scanned image is different: the
+  pixels underneath were never captured, so anything placed there can only be
+  guessed. Those pages are marked <span class="badge mono review">LOSSY</span>
+  and the original is always kept.
+</div>
+
+<div class="card">
+  <div class="dropzone" id="wm-dropzone">
+    <div class="big">Upload PDF Files</div>
+    <div class="btn-row" style="justify-content:center;margin-top:12px">
+      <button class="btn-primary" id="btn-wm-browse">Browse PDFs</button>
+    </div>
+    <div class="hint">Originals are never modified. Cleaned copies are written alongside.</div>
+  </div>
+</div>
+
+{{#has_files}}
+<div class="card">
+  <h2>Selected Files</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th class="num">Pages</th><th>Detected</th>
+        <th>Method</th><th>Result</th></tr></thead>
+      <tbody>
+      {{#files}}
+        <tr>
+          <td>{{name}}</td>
+          <td class="num">{{pages}}</td>
+          <td>{{#detected}}<span class="badge {{detect_class}}">{{detected}}</span>{{/detected}}
+              {{^detected}}<span class="muted">not scanned</span>{{/detected}}</td>
+          <td>{{method}}</td>
+          <td>{{#done}}<span class="badge {{result_class}}">{{result}}</span>{{/done}}
+              {{^done}}<span class="muted">pending</span>{{/done}}</td>
+        </tr>
+      {{/files}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{/has_files}}
+
+{{#running}}
+<div class="card tight">
+  <h2>Progress</h2>
+  <div class="progress-row">
+    <span class="name">Processing</span>
+    <span class="bar"><span style="width:{{percent}}%"></span></span>
+    <span class="count">{{done}} / {{total}}</span>
+  </div>
+</div>
+{{/running}}
+
+<div class="btn-row">
+  <button class="btn-primary" id="btn-wm-scan" {{^has_files}}disabled{{/has_files}}>Detect Watermarks</button>
+  <button class="btn-secondary" id="btn-wm-remove" {{^can_remove}}disabled{{/can_remove}}>Remove Watermarks</button>
+  <button id="btn-wm-open" {{^has_output}}disabled{{/has_output}}>Open Output Folder</button>
+  <button id="btn-wm-clear">Clear</button>
+</div>
+
+<div class="card tight" style="margin-top:16px">
+  <h2>Detection Methods</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Type</th><th>How it is removed</th><th>Fidelity</th></tr></thead>
+      <tbody>
+        <tr><td>Optional content group (OCG)</td>
+            <td class="script">The layer is dropped from the page tree.</td>
+            <td><span class="badge ok">Lossless</span></td></tr>
+        <tr><td>Annotation / stamp</td>
+            <td class="script">The annotation object is deleted.</td>
+            <td><span class="badge ok">Lossless</span></td></tr>
+        <tr><td>Vector or text overlay</td>
+            <td class="script">Matching drawing operators are removed from the content stream.</td>
+            <td><span class="badge ok">Lossless</span></td></tr>
+        <tr><td>Raster, burned into a scan</td>
+            <td class="script">Inpainting estimates the covered pixels. Text underneath may not be recoverable.</td>
+            <td><span class="badge review">Lossy</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>

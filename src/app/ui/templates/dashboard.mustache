@@ -1,0 +1,121 @@
+{{! Dashboard: active batch with per-stage progress, queued batches, completed
+    batches with actions. Machine details moved to Settings. }}
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <div class="spacer"></div>
+  <button id="btn-refresh">Refresh</button>
+</div>
+
+{{#notice}}
+<div class="notice {{level}}">{{{message}}}</div>
+{{/notice}}
+
+{{! ---------------- active batch ---------------- }}
+<div class="card">
+  <h2>Active Batch</h2>
+  {{#active}}
+    <div class="grid two" style="margin-bottom:16px">
+      <dl class="kv">
+        <dt>Batch Name</dt><dd>{{name}}</dd>
+        <dt>Documents</dt><dd>{{total}}</dd>
+        <dt>State</dt><dd><span class="badge {{state_class}}">{{state}}</span></dd>
+      </dl>
+      <dl class="kv">
+        <dt>Speed</dt><dd>{{seconds_per_document}} s / document</dd>
+        <dt>ETA</dt><dd>{{eta}}</dd>
+        <dt>Started</dt><dd>{{started_at}}</dd>
+      </dl>
+    </div>
+
+    {{#stages}}
+    <div class="progress-row">
+      <span class="name">{{label}}</span>
+      <span class="bar {{bar_class}}"><span style="width:{{percent}}%"></span></span>
+      <span class="count">{{done}} / {{total}} &middot; {{percent}}%</span>
+    </div>
+    {{/stages}}
+
+    <div class="grid four" style="margin-top:18px">
+      <div class="stat ok"><div class="value">{{completed}}</div><div class="label">Completed</div></div>
+      <div class="stat warn"><div class="value">{{needs_review}}</div><div class="label">Needs Review</div></div>
+      <div class="stat danger"><div class="value">{{failed}}</div><div class="label">Failed</div></div>
+      <div class="stat"><div class="value">{{remaining}}</div><div class="label">Remaining</div></div>
+    </div>
+  {{/active}}
+  {{^active}}
+    <div class="empty">No batch is running. Upload PDFs, then press Start.</div>
+  {{/active}}
+</div>
+
+{{! ---------------- queue ---------------- }}
+<div class="card">
+  <h2>Queued Batches <span class="muted" style="font-weight:400">({{queued_count}} of {{max_queued}})</span></h2>
+  {{#has_queued}}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Batch Name</th><th class="num">Files</th><th class="num">Size</th>
+        <th>Uploaded By</th><th>Created</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody>
+      {{#queued}}
+        <tr>
+          <td>{{name}}</td>
+          <td class="num">{{file_count}}</td>
+          <td class="num">{{size}}</td>
+          <td>{{username}}</td>
+          <td>{{created_at}}</td>
+          <td><span class="badge">{{state}}</span></td>
+          <td><button data-view-batch="{{id}}">View</button></td>
+        </tr>
+      {{/queued}}
+      </tbody>
+    </table>
+  </div>
+  {{/has_queued}}
+  {{^has_queued}}
+    <div class="empty">Nothing queued. Up to {{max_queued}} batches may wait at a time.</div>
+  {{/has_queued}}
+</div>
+
+{{! ---------------- completed ---------------- }}
+<div class="card">
+  <h2>Completed Batches</h2>
+  {{#has_completed}}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Batch Name</th><th class="num">Files</th><th class="num">Done</th>
+        <th class="num">Review</th><th class="num">Failed</th><th>Finished</th><th>Actions</th>
+      </tr></thead>
+      <tbody>
+      {{#completed}}
+        <tr>
+          <td>{{name}}</td>
+          <td class="num">{{total}}</td>
+          <td class="num">{{completed}}</td>
+          <td class="num">{{needs_review}}</td>
+          <td class="num">{{failed}}</td>
+          <td>{{finished_at}}</td>
+          <td>
+            <div class="btn-row">
+              <button data-view-batch="{{id}}">View</button>
+              <button class="btn-accent" data-export-batch="{{id}}">Download CSV</button>
+              {{#has_failed}}
+              <button data-export-failed="{{id}}">Failed CSV</button>
+              <button class="btn-secondary" data-reprocess-batch="{{id}}">Reprocess Failed</button>
+              {{/has_failed}}
+              <button class="btn-danger" data-delete-batch="{{id}}">Delete</button>
+            </div>
+          </td>
+        </tr>
+      {{/completed}}
+      </tbody>
+    </table>
+  </div>
+  {{> pager}}
+  {{/has_completed}}
+  {{^has_completed}}
+    <div class="empty">No completed batches yet.</div>
+  {{/has_completed}}
+</div>

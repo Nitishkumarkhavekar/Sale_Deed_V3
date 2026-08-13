@@ -1,0 +1,13 @@
+{{! Shared pagination control. Windowed page numbers plus a range readout. }}
+{{#pager}}
+{{#multi}}
+<div class="pager">
+  <button data-page="{{prev}}" {{^has_prev}}disabled{{/has_prev}}>&laquo; Previous</button>
+  {{#numbers}}
+  <button data-page="{{n}}" class="{{#current}}current{{/current}}">{{n}}</button>
+  {{/numbers}}
+  <button data-page="{{next}}" {{^has_next}}disabled{{/has_next}}>Next &raquo;</button>
+  <span class="info">{{range_from}}&ndash;{{range_to}} of {{total}}</span>
+</div>
+{{/multi}}
+{{/pager}}

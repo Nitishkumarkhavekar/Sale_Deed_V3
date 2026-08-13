@@ -1,0 +1,36 @@
+{{! The prepared document, in Chromium's built-in PDF viewer.
+
+    An <embed> rather than a hand-written renderer: the built-in viewer brings
+    text selection, copy, find and zoom, and it renders the same searchable PDF
+    the pipeline read. A custom canvas renderer would mean reimplementing all of
+    that and producing a *different* text layer from the one the model saw. }}
+<div class="modal-backdrop" data-modal-backdrop>
+  <div class="modal wide">
+    <div class="modal-head">
+      <h2>{{#transaction_identity}}{{transaction_identity}}{{/transaction_identity}}{{^transaction_identity}}{{document_id}}{{/transaction_identity}}</h2>
+      {{^transaction_identity}}<p class="hint">No registration number could be read from this deed; showing the file identifier.</p>{{/transaction_identity}}
+      <button class="icon" data-close-modal aria-label="Close">&times;</button>
+    </div>
+
+    <div class="notice {{#cleaned}}ok{{/cleaned}}{{^cleaned}}warn{{/cleaned}} tight">
+      {{source_note}}
+      {{#cleaned}}
+      Select any text and press Ctrl+C, or use the viewer's own copy control.
+      {{/cleaned}}
+    </div>
+
+    <div class="pdf-frame">
+      {{! `#toolbar=1` keeps the viewer's find and copy controls available. }}
+      <embed src="{{url}}#toolbar=1&navpanes=0" type="application/pdf"
+             width="100%" height="100%">
+    </div>
+
+    <div class="modal-foot">
+      <span class="muted">{{filename}}{{#pages}} &middot; {{pages}} pages{{/pages}}</span>
+      <div class="btn-row">
+        <button id="btn-copy-page-text" data-document="{{document_pk}}">Copy All Text</button>
+        <button data-close-modal>Close</button>
+      </div>
+    </div>
+  </div>
+</div>

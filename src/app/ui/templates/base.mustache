@@ -1,0 +1,109 @@
+{{! Shell: top bar + left navigation + right content.
+    Rendered once per navigation. The AI-server indicator, GPU figures and queue
+    state are refreshed in place by JS so the operator never sees a page flash
+    while a batch is running. }}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{page_title}} - Sale Deed AI</title>
+<link rel="stylesheet" href="app://ui/assets/theme.css">
+</head>
+<body>
+<div class="shell">
+
+  <div class="topbar">
+    <div class="brand">
+      <span class="emblem"></span>
+      <span>Sale Deed AI</span>
+    </div>
+
+    <div class="spacer"></div>
+
+    {{! The reference's two top tabs. They are shortcuts to pages that already
+        exist in the left navigation, not a second navigation system - the nav
+        remains the complete list, so nothing became unreachable. }}
+    {{! A div, deliberately, not a second <nav>. `nav a.active` is how the left
+        navigation's current page is located - by the UI smoke test and by
+        anything else reading the DOM - and a second nav in the top bar would
+        capture that selector and report the wrong page. }}
+    <div class="tabs" role="tablist" aria-label="Sections">
+      <a href="#dashboard" class="{{#tab_control}}active{{/tab_control}}">Control Panel</a>
+      <a href="#data" class="{{#tab_data}}active{{/tab_data}}">Data View</a>
+    </div>
+
+    <div class="spacer"></div>
+
+    <span class="pill" id="ai-status" title="AI server health">
+      <span class="dot {{#ai_ready}}on{{/ai_ready}}{{^ai_ready}}off{{/ai_ready}}"></span>
+      <span id="ai-status-text">AI Server {{#ai_ready}}Active{{/ai_ready}}{{^ai_ready}}Offline{{/ai_ready}}</span>
+    </span>
+
+    <span class="pill" id="gpu-status" title="GPU utilisation and free VRAM">
+      GPU <b id="gpu-util">{{gpu_util}}</b> &nbsp;|&nbsp; VRAM free <b id="vram-free">{{vram_free}}</b>
+    </span>
+
+    <span class="pill" id="queue-status" title="Processing state">
+      <span class="dot {{#running}}busy{{/running}}{{^running}}off{{/running}}"></span>
+      <span id="queue-text">{{runner_state}}</span>
+    </span>
+
+    <span class="pill" title="Translation language">{{translation_language}}</span>
+
+    <div class="btn-row">
+      <button class="btn-ok" id="btn-start" {{#running}}disabled{{/running}}>Start</button>
+      <button id="btn-pause" {{^running}}disabled{{/running}}>Pause</button>
+      <button class="btn-stop" id="btn-stop" {{^running}}disabled{{/running}}>Stop</button>
+      <button class="icon-btn" id="btn-theme" title="Switch between light and dark">&#9789;</button>
+    </div>
+  </div>
+
+  <div class="body">
+    <nav class="nav">
+      <div class="group">Processing</div>
+      <a href="#dashboard"  class="{{#nav_dashboard}}active{{/nav_dashboard}}">Dashboard</a>
+      <a href="#upload"     class="{{#nav_upload}}active{{/nav_upload}}">Upload PDFs</a>
+      <a href="#processing" class="{{#nav_processing}}active{{/nav_processing}}">PDF Processing</a>
+      <a href="#failed_ocr" class="{{#nav_failed_ocr}}active{{/nav_failed_ocr}}">Failed OCR
+        {{! Filled and unhidden by the status poll. Starts hidden so a healthy
+            run never shows an empty badge. }}
+        <span class="nav-badge" id="nav-failed-count" style="display:none">0</span>
+      </a>
+      <a href="#data"       class="{{#nav_data}}active{{/nav_data}}">Data View</a>
+      <div class="group">Tools</div>
+      <a href="#watermark"  class="{{#nav_watermark}}active{{/nav_watermark}}">Watermark Remover</a>
+      <div class="group">Configuration</div>
+      <a href="#settings"   class="{{#nav_settings}}active{{/nav_settings}}">Settings</a>
+      <a href="#validation" class="{{#nav_validation}}active{{/nav_validation}}">Validation Rules</a>
+      <a href="#help"       class="{{#nav_help}}active{{/nav_help}}">Help</a>
+    </nav>
+
+    {{! `.content` is the scroll container; `#content` is what navigation
+        replaces. They were the same element, so anything placed alongside the
+        page content was wiped on the first navigation. Splitting them lets the
+        banner scroll with the page - as in the reference - and still survive. }}
+    <main class="content">
+      <div class="hero">
+        <span class="emblem">&#9878;</span>
+        <div>
+          <h1>Sale Deed AI</h1>
+          <div class="sub">Income Tax Department &middot; Document Processing System</div>
+        </div>
+        <div class="spacer"></div>
+        <span class="hero-pill">{{translation_language}}</span>
+      </div>
+      <div id="content">
+        {{> capability_banner}}
+        {{{content}}}
+      </div>
+    </main>
+  </div>
+</div>
+
+<div id="modal-host"></div>
+
+{{! qwebchannel.js is injected by install_web_channel_script(): qrc: is a
+    different origin from app://ui/ and the request would be blocked. }}
+<script src="app://ui/assets/app.js"></script>
+</body>
+</html>
