@@ -17,6 +17,7 @@ is confusing enough to be worth preventing outright.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections.abc import Iterator
@@ -53,9 +54,73 @@ def normalise_dsn(dsn: str) -> str:
     return re.sub(r"^postgres(?:ql)?(?:\+psycopg2)?://", "postgresql+psycopg://", dsn)
 
 
+def _load_env_file() -> None:
+    """Make `.env` authoritative for every entry point, not just the launcher.
+
+    `launcher/config.py` reads `.env`, so the desktop application saw the
+    configured credential - but pytest, `alembic`, and every tool script bypass
+    the launcher entirely and fell through to `DEFAULT_DSN`. The configured
+    password was therefore ignored by most of the ways this code is actually
+    run, which is also why a hard-coded fallback could survive unnoticed.
+
+    Values already in the environment win: an operator who exported
+    `SALEDEED_DB_URL` for one command means it.
+    """
+    try:
+        from core import paths
+
+        path = paths.ROOT / ".env"
+        if not path.is_file():
+            return
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:  # noqa: BLE001 - configuration must never break startup
+        return
+
+
 def dsn_from_env(env: dict[str, str] | None = None) -> str:
+    """The configured DSN.
+
+    Falls back to `DEFAULT_DSN` only when nothing is configured. That fallback
+    carries a guessable password and exists so a developer machine works out of
+    the box; a deployed system must set `SALEDEED_DB_URL`, which the installer
+    writes to `.env`.
+    """
+    if env is None:
+        _load_env_file()
     source = env if env is not None else dict(os.environ)
-    return normalise_dsn(source.get("SALEDEED_DB_URL", DEFAULT_DSN))
+    configured = source.get("SALEDEED_DB_URL")
+    if not configured:
+        _log_default_dsn_use()
+        return normalise_dsn(DEFAULT_DSN)
+    return normalise_dsn(configured)
+
+
+def _log_default_dsn_use() -> None:
+    """Say, once, that the built-in credential is in use.
+
+    Not an exception: raising here would break every machine that works today,
+    including this project's own test suite. A warning names the problem at the
+    moment it matters and points at the fix, without taking a working system
+    down to make a point.
+    """
+    global _WARNED_DEFAULT_DSN
+    if _WARNED_DEFAULT_DSN:
+        return
+    _WARNED_DEFAULT_DSN = True
+    logging.getLogger("saledeed.db").warning(
+        "SALEDEED_DB_URL is not set; connecting with the built-in development "
+        "credential. Write a generated password to .env - "
+        "`System Setup.bat` does this automatically on a new machine.")
+
+
+_WARNED_DEFAULT_DSN = False
 
 
 def build_engine(
