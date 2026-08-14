@@ -1,7 +1,7 @@
 # Installation Report
 
-**Generated:** 2026-08-12T12:05:30
-**Duration:** 7s
+**Generated:** 2026-08-14T15:26:22
+**Duration:** 9s
 
 ## System
 
@@ -17,13 +17,13 @@
 | cores_physical | 8 |
 | cores_logical | 16 |
 | ram_total_gb | 7.4 |
-| ram_available_gb | 1.0 |
+| ram_available_gb | 2.0 |
 | cuda_available | True |
 | cuda_version | 12.7 |
 | driver_version | 566.07 |
 | gpu | NVIDIA GeForce RTX 3050 Laptop GPU (4.0 GiB) |
 | gpu_vram_gb | 4.0 |
-| disk_free_gb | 133.7 |
+| disk_free_gb | 133.5 |
 | disk_total_gb | 195.3 |
 | internet | True |
 | git | git version 2.52.0.windows.1 |
@@ -36,9 +36,9 @@
 | Folders | missing | 1 would be created | 0.0 |
 | Visual C++ runtime | found | present | 0.0 |
 | Python 3.12 (OCR) | found | present | 0.1 |
-| Python packages | found | 6 import cleanly | 2.0 |
-| Migrations | found | already at head | 1.1 |
-| Configuration | missing | .env would be written | 0.0 |
+| Python packages | found | 6 import cleanly | 2.3 |
+| Migrations | found | already at head | 1.2 |
+| Configuration | found | .env exists | 0.0 |
 | Inference runtime | found | llama-server.exe | 0.0 |
 | Extraction model | found | deeds-v6_7-f16.gguf (7.24 GB) | 0.0 |
 | Translation model | found | nllb-200-distilled-600M (2.3 GB) | 0.0 |
@@ -47,4 +47,3 @@
 ## Needs attention
 
 - **Folders** — 1 would be created
-- **Configuration** — .env would be written

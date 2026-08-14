@@ -596,7 +596,7 @@ def ensure_ocr(report: Report) -> None:
 # ---------------------------------------------------------------------------
 
 
-def ensure_configuration(report: Report, password: str, install: bool,
+def ensure_configuration(report: Report, dsn: str, install: bool,
                          created_database: bool) -> None:
     """Write `.env` if absent. Never overwrite: it holds the live password.
 
@@ -634,7 +634,7 @@ def ensure_configuration(report: Report, password: str, install: bool,
     env_path.write_text(
         "# Sale Deed AI - written by System Setup.\n"
         "# Holds the database password. Never commit this file.\n\n"
-        f"SALEDEED_DB_URL=postgresql+psycopg://saledeed:{password}@localhost:5432/saledeed\n"
+        f"SALEDEED_DB_URL={dsn}\n"
         "SALEDEED_AI_URL=http://127.0.0.1:8077\n"
         "SALEDEED_DEBUG=false\n"
         "# Nightly backup and purge. Off by default: retention DELETES data.\n"
@@ -733,6 +733,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="skip the test suite during validation")
     parser.add_argument("--db-password", default="",
                         help="database password; generated if omitted")
+    # Per-machine. A target system may differ from this one in exactly one
+    # respect - a busy 5432, a shared server, a renamed database - and having
+    # to hand-edit a DSN to change a port is how credentials end up pasted
+    # into scripts.
+    parser.add_argument("--db-host", default="localhost")
+    parser.add_argument("--db-port", default="5432")
+    parser.add_argument("--db-name", default="saledeed")
+    parser.add_argument("--db-user", default="saledeed")
     args = parser.parse_args(argv)
 
     try:
@@ -745,6 +753,16 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
 
     password = args.db_password or _generate_password()
+    # Assembled once, from this machine's answers, and never rebuilt from
+    # literals further down.
+    sys.path.insert(0, str(ROOT))
+    from core.db.engine import build_dsn
+
+    dsn = build_dsn({"SALEDEED_DB_HOST": args.db_host,
+                     "SALEDEED_DB_PORT": args.db_port,
+                     "SALEDEED_DB_NAME": args.db_name,
+                     "SALEDEED_DB_USER": args.db_user,
+                     "SALEDEED_DB_PASSWORD": password})
 
     print()
     print("  Sale Deed AI - System Setup")
@@ -804,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n  Application")
     print("  " + "-" * 66)
     created_database = ensure_database(report, install, password)
-    ensure_configuration(report, password, install, created_database)
+    ensure_configuration(report, dsn, install, created_database)
     ensure_runtime(report, install)
     verify_extraction_model(report)
     ensure_translation(report, install)

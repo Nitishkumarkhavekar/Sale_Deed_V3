@@ -29,6 +29,43 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base
 
+#: Defaults for a machine that says nothing about its database. Each is
+#: overridable on its own, because a target machine may differ from this one in
+#: exactly one respect - a non-default port, a shared server, a renamed
+#: database - and forcing a full DSN to change a port is how installers end up
+#: with credentials pasted into scripts.
+DB_DEFAULTS = {
+    "SALEDEED_DB_HOST": "localhost",
+    "SALEDEED_DB_PORT": "5432",
+    "SALEDEED_DB_NAME": "saledeed",
+    "SALEDEED_DB_USER": "saledeed",
+    "SALEDEED_DB_PASSWORD": "saledeed",
+}
+
+
+def build_dsn(env: dict[str, str] | None = None) -> str:
+    """Assemble a DSN from its parts.
+
+    `SALEDEED_DB_URL` remains the single override that wins outright - a
+    complete URL is unambiguous and is what the installer writes. These parts
+    exist for the case where only one of them differs, and for the installer to
+    fill in per machine rather than shipping a development machine's values.
+
+    The password is quoted: a generated password may contain characters that
+    would otherwise terminate the URL early and produce a baffling parse error
+    rather than an authentication failure.
+    """
+    from urllib.parse import quote
+
+    source = env if env is not None else dict(os.environ)
+    part = lambda key: source.get(key) or DB_DEFAULTS[key]  # noqa: E731
+    user = quote(part("SALEDEED_DB_USER"), safe="")
+    password = quote(part("SALEDEED_DB_PASSWORD"), safe="")
+    return (f"postgresql+psycopg://{user}:{password}@"
+            f"{part('SALEDEED_DB_HOST')}:{part('SALEDEED_DB_PORT')}/"
+            f"{part('SALEDEED_DB_NAME')}")
+
+
 #: PostgreSQL is the application database (ADR-012). SQLite is retained only as a
 #: verification target for `tools/db_setup.py --sqlite`, never for the app.
 DEFAULT_DSN = "postgresql+psycopg://saledeed:saledeed@localhost:5432/saledeed"
@@ -96,10 +133,15 @@ def dsn_from_env(env: dict[str, str] | None = None) -> str:
         _load_env_file()
     source = env if env is not None else dict(os.environ)
     configured = source.get("SALEDEED_DB_URL")
-    if not configured:
+    if configured:
+        return normalise_dsn(configured)
+
+    # No complete URL. Assemble one from the parts, any of which may have been
+    # set individually; only warn when *nothing* was configured, because a
+    # machine that set a host and port has been configured deliberately.
+    if not any(source.get(key) for key in DB_DEFAULTS):
         _log_default_dsn_use()
-        return normalise_dsn(DEFAULT_DSN)
-    return normalise_dsn(configured)
+    return normalise_dsn(build_dsn(source))
 
 
 def _log_default_dsn_use() -> None:
