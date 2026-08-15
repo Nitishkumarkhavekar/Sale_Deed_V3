@@ -92,6 +92,17 @@ def _weights_present(model_dir: Path) -> bool:
 
 
 def main() -> int:
+    # Before argparse, not after. `--help` prints this module's docstring,
+    # which contains non-ASCII text, and a Windows console defaults to cp1252 -
+    # so asking a translation tool for help died with a UnicodeEncodeError
+    # instead of printing it. Reconfiguring after `parse_args()` was too late:
+    # `--help` never returns from there.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except AttributeError:
+        pass
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="NLLB model directory")
     parser.add_argument("--in", dest="infile", help="JSON input; stdin if absent")
@@ -102,11 +113,6 @@ def main() -> int:
     parser.add_argument("--probe", action="store_true",
                         help="report readiness and exit without loading")
     args = parser.parse_args()
-
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-    except AttributeError:
-        pass
 
     model_dir = Path(args.model)
     device, why = choose_device(args.device)

@@ -623,8 +623,11 @@ class TestNoDetachedOrmAccess:
 
         source = (ROOT / "src" / "app" / "services.py").read_text(encoding="utf-8")
         # Relationship attributes - the ones that emit SQL when touched.
-        relationships = ("\.user\b", "\.documents\b", "\.batch\b",
-                         "\.persons\b", "\.pages\b", "\.extractions\b")
+        # Raw strings: without the r-prefix these were ordinary strings, so
+        # every \\b became a literal BACKSPACE character and the patterns
+        # matched nothing. The check passed by never finding an offender.
+        relationships = (r"\.user\b", r"\.documents\b", r"\.batch\b",
+                         r"\.persons\b", r"\.pages\b", r"\.extractions\b")
         offenders: list[str] = []
         for match in re.finditer(r"def (_\w+)\(self", source):
             name = match.group(1)
