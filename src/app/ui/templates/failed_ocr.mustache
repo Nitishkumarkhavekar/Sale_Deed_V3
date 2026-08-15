@@ -90,7 +90,20 @@
           <td class="num">{{attempts}}</td>
           {{! The whole reason, not a truncation: deciding whether a rerun is
               worth the GPU time needs what actually went wrong. }}
-          <td class="reason">{{reason}}</td>
+          {{! Why it failed, in words. The technical text sits behind a
+              disclosure: a Python exception is not something to put in front
+              of a clerk, but it must stay reachable for whoever debugs it. }}
+          <td class="reason">
+            {{#cause}}<strong>{{cause}}</strong>{{/cause}}
+            {{#cause_stage}}<div class="hint">Stage: {{cause_stage}} &middot; {{cause_code}}</div>{{/cause_stage}}
+            {{#cause_technical}}
+            <details style="margin-top:6px">
+              <summary class="hint" style="cursor:pointer">Technical details</summary>
+              <div class="mono" style="margin-top:4px;white-space:normal">{{cause_technical}}</div>
+            </details>
+            {{/cause_technical}}
+            {{^cause}}{{reason}}{{/cause}}
+          </td>
           <td class="muted">{{failed_at}}</td>
           <td class="num">
             {{! A damaged file fails identically on a retry, so the honest

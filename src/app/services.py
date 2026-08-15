@@ -25,6 +25,7 @@ from core import paths
 from core.csv_export import DocumentExport, FailedDocument, write_csv, write_failed_csv
 from core.db.engine import build_engine, build_session_factory, check_connection, session_scope
 from core.db.models import BatchState, DocumentState
+from core.failure_codes import classify as _cause
 from core.pdf_validation import CORRUPT_STATUSES
 from core.db.repositories import (
     MAX_BATCH_BYTES,
@@ -801,6 +802,13 @@ class AppService:
                     # The validator's verdict on the file itself. NULL means it
                     # was never asked - older rows, or a failure that predates
                     # the feature.
+                    # Why it failed, in words. Classified from what is already
+                    # stored, so nothing needs re-running and a document that
+                    # failed before this existed is still explained.
+                    "cause": (_cause(doc) or {}).get("reason", ""),
+                    "cause_code": (_cause(doc) or {}).get("code", ""),
+                    "cause_stage": (_cause(doc) or {}).get("stage", ""),
+                    "cause_technical": (_cause(doc) or {}).get("technical", ""),
                     "validation_status": doc.validation_status or "",
                     "validation_label": VALIDATION_LABELS.get(
                         doc.validation_status or "", doc.validation_status or "Not checked"),
