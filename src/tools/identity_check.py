@@ -28,7 +28,7 @@ SERIAL = re.compile(r"(\d{2,6})")
 #: "00082-2022-23", "1021 25.26", "2797-25-26 TRK". Anchored rather than
 #: searched, because an unanchored pattern also eats the serial.
 LEADING_YEAR = re.compile(r"^(?:20)?\d{2}\s*[-. ]\s*(?:20)?\d{2}\s*[-. ]?\s*")
-TRAILING_YEAR = re.compile(r"\s*[-. ]\s*(?:20)?\d{2}\s*[-. ]\s*(?:20)?\d{2}.*$")
+TRAILING_YEAR = re.compile(r"\s*[-. ]\s*(?:20)?\d{2}\s*[-. ]\s*(?:20)?\d{2}\b.*$")
 
 
 def expected_serial(stem: str) -> str | None:

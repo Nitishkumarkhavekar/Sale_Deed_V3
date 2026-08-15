@@ -123,9 +123,17 @@ def main() -> int:
         print(f"      {column:34} = {value[:28]}")
 
     print("\n  identifiers must be untouched:")
+    # The buyer's row, selected by relation rather than by position. Rows are
+    # ordered seller-first, and the identifiers above belong to the buyer - so
+    # `rows[0]` compared the seller's (correctly empty) PAN against the buyer's
+    # expected value and reported the translation stage as corrupting
+    # identifiers it never touches. A check that cries wolf about Aadhaar
+    # corruption is worse than no check at all.
+    buyer = next((r for r in rows if r.get("Transaction Relation (PC)") == "B"),
+                 rows[0] if rows else {})
     for column, expected in (("PAN (PC)", "ABCDE1234F"),
                              ("Aadhaar Number (PC)", "123456789012")):
-        actual = rows[0].get(column, "")
+        actual = buyer.get(column, "")
         print(f"      {column:22} {actual:16} {'ok' if actual == expected else 'CHANGED'}")
         failures += 0 if actual == expected else 1
 
