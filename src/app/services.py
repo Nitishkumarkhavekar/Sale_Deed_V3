@@ -26,6 +26,7 @@ from core.csv_export import DocumentExport, FailedDocument, write_csv, write_fai
 from core.db.engine import build_engine, build_session_factory, check_connection, session_scope
 from core.db.models import BatchState, DocumentState
 from core.failure_codes import classify as _cause
+from core.failure_codes import describe as _describe
 from core.pdf_validation import CORRUPT_STATUSES
 from core.db.repositories import (
     MAX_BATCH_BYTES,
@@ -809,6 +810,11 @@ class AppService:
                     "cause_code": (_cause(doc) or {}).get("code", ""),
                     "cause_stage": (_cause(doc) or {}).get("stage", ""),
                     "cause_technical": (_cause(doc) or {}).get("technical", ""),
+                    # The full sequence, oldest first. A retry appends rather
+                    # than replacing, so "watermark failed, then OCR found no
+                    # text" stays visible as two events.
+                    "history": _describe(uow.documents.failure_history(doc)),
+                    "has_history": len(doc.failure_events) > 1,
                     "validation_status": doc.validation_status or "",
                     "validation_label": VALIDATION_LABELS.get(
                         doc.validation_status or "", doc.validation_status or "Not checked"),

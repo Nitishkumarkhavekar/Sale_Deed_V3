@@ -405,6 +405,26 @@ class BatchRunner:
         return True
 
     @staticmethod
+    def _append_failure(uow: UnitOfWork, doc: Document, stage: str,
+                        detail: str, verdict: Any = None) -> None:
+        """Append the diagnosis to the document's history.
+
+        Best-effort by design: a failure to *record* a failure must never turn
+        one bad document into a dead batch. The stage columns are already
+        written by the caller, so losing an event costs history, not state.
+        """
+        try:
+            from core.failure_codes import classify_text
+
+            code, message, retryable = classify_text(
+                detail, getattr(verdict, "status", None))
+            uow.documents.record_failure(
+                doc, stage=stage, code=code, message=message,
+                technical=detail or "", retryable=retryable)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not record failure event: %s", exc)
+
+    @staticmethod
     def _validate_failed_pdf(pdf_path: str, doc: Document, detail: str) -> Any:
         """Ask what the file actually is, after a stage has failed on it.
 
@@ -566,6 +586,7 @@ class BatchRunner:
                     processing_status=None if retry else "OCR_F")
                 if verdict is not None:
                     uow.documents.record_validation(doc, verdict)
+                self._append_failure(uow, doc, "ocr", outcome.detail, verdict)
                 # REQUEUED leaves overall_state PROCESSING so the document stays
                 # claimable; None means give up on it.
                 return REQUEUED if retry else None
@@ -724,10 +745,12 @@ class BatchRunner:
                 if not answered:
                     uow.documents.mark_stage(doc, "extract", StageState.FAILED,
                                              reason=outcome.detail)
+                    self._append_failure(uow, doc, "extract", outcome.detail)
                     return None
 
                 uow.documents.mark_stage(doc, "extract", StageState.DONE,
                                          reason=outcome.detail)
+                self._append_failure(uow, doc, "extract", outcome.detail)
                 # The model answered and the answer is not trustworthy. A human
                 # decides.
                 uow.documents.mark_overall(doc, DocumentState.NEEDS_REVIEW,

@@ -268,6 +268,11 @@ class Document(Base):
     validations: Mapped[list[ValidationResult]] = relationship(
         back_populates="document", cascade="all, delete-orphan",
         passive_deletes=True)
+    #: Append-only diagnosis history. Ordered oldest first so the sequence
+    #: reads the way it happened.
+    failure_events: Mapped[list[FailureEvent]] = relationship(
+        back_populates="document", cascade="all, delete-orphan",
+        passive_deletes=True, order_by="FailureEvent.created_at")
 
     __table_args__ = (
         # A document number must be unique within its batch: this is the guard
@@ -468,4 +473,55 @@ class LogEntry(Base):
 
     __table_args__ = (
         Index("ix_logs_level_created", "level", "created_at"),
+    )
+
+
+class FailureEvent(Base):
+    """One diagnosis, appended - never updated, never overwritten.
+
+    A retry used to erase the previous verdict: `requeue_ocr` clears
+    `failure_reason`, so a document that failed three different ways showed only
+    the last one, and the sequence that would explain it was gone. That sequence
+    is often the whole story - "watermark removal failed, then OCR found no
+    text" is a different problem from "OCR found no text" on its own.
+
+    Append-only, so the history survives every retry. The document keeps its
+    current verdict in its own columns for the common case; this table answers
+    "what happened to it over time".
+    """
+
+    __tablename__ = "failure_events"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    #: The batch is denormalised so a batch-wide failure report needs no join
+    #: through documents, and survives as SET NULL if the batch is removed.
+    batch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("batches.id", ondelete="SET NULL"))
+
+    #: Which stage produced it: ocr, extract, translate, validate, watermark.
+    stage: Mapped[str] = mapped_column(String(24), nullable=False)
+    #: A `core.failure_codes` code - stable, so logs and exports keep working
+    #: when the wording changes.
+    code: Mapped[str] = mapped_column(String(48), nullable=False)
+    #: What the operator is told.
+    message: Mapped[str | None] = mapped_column(Text)
+    #: The exception text, kept for whoever debugs it and never shown by
+    #: default. Sanitised before it gets here - no stack traces.
+    technical: Mapped[str | None] = mapped_column(Text)
+    #: Which attempt this was, so a repeated identical failure is visible as
+    #: repetition rather than looking like one event.
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    retryable: Mapped[bool | None] = mapped_column(Boolean)
+
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now(),
+                                                 nullable=False)
+
+    document: Mapped[Document] = relationship(back_populates="failure_events")
+
+    __table_args__ = (
+        # The history of one document, in order - the only query this serves.
+        Index("ix_failure_events_document", "document_id", "created_at"),
+        Index("ix_failure_events_batch_code", "batch_id", "code"),
     )

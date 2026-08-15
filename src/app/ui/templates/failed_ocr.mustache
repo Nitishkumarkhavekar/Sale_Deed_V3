@@ -98,7 +98,23 @@
             {{#cause_stage}}<div class="hint">Stage: {{cause_stage}} &middot; {{cause_code}}</div>{{/cause_stage}}
             {{#cause_technical}}
             <details style="margin-top:6px">
-              <summary class="hint" style="cursor:pointer">Technical details</summary>
+              <summary class="hint" style="cursor:pointer">View details</summary>
+              {{#has_history}}
+              {{! Every attempt, oldest first. The sequence is often the point:
+                  a document that failed three different ways is a different
+                  problem from one that failed the same way three times. }}
+              <div class="hint" style="margin-top:6px"><strong>Processing history</strong></div>
+              <table style="margin-top:4px">
+                <thead><tr><th>Stage</th><th>Cause</th><th class="num">Attempt</th><th>When</th></tr></thead>
+                <tbody>
+                {{#history}}
+                <tr><td>{{stage}}</td><td>{{message}}<div class="hint mono">{{code}}</div></td>
+                    <td class="num">{{attempt}}</td><td class="muted">{{at}}</td></tr>
+                {{/history}}
+                </tbody>
+              </table>
+              {{/has_history}}
+              <div class="hint" style="margin-top:8px">Technical details</div>
               <div class="mono" style="margin-top:4px;white-space:normal">{{cause_technical}}</div>
             </details>
             {{/cause_technical}}

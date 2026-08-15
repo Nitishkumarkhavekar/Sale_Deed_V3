@@ -35,6 +35,7 @@ from .models import (
     Document,
     DocumentState,
     Extraction,
+    FailureEvent,
     LogEntry,
     OcrPage,
     Person,
@@ -529,6 +530,40 @@ class DocumentRepository(_Base):
             .order_by(Document.batch_id.desc(), Document.id)
             .offset((max(1, page) - 1) * per_page).limit(per_page)))
         return rows, total
+
+    def record_failure(self, doc: Document, *, stage: str, code: str,
+                       message: str = "", technical: str = "",
+                       retryable: bool | None = None) -> FailureEvent:
+        """Append one diagnosis. Never updates, never replaces.
+
+        This is the only writer, and it only ever inserts. A retry that
+        overwrote the previous verdict is exactly the behaviour this exists to
+        end: "watermark removal failed, then OCR found no text" is a different
+        problem from "OCR found no text", and the difference is only visible in
+        the sequence.
+        """
+        # Counted with a query, not from `doc.failure_events`. That collection
+        # is loaded once and does not see rows added later in the same session,
+        # so three failures in one run all recorded attempt 1 - which made a
+        # document that failed repeatedly look like it failed once.
+        attempt = 1 + (self.session.scalar(
+            select(func.count()).select_from(FailureEvent)
+            .where(FailureEvent.document_id == doc.id,
+                   FailureEvent.stage == stage)) or 0)
+        event = FailureEvent(
+            document_id=doc.id, batch_id=doc.batch_id, stage=stage, code=code,
+            message=(message or "")[:2000] or None,
+            technical=(technical or "")[:2000] or None,
+            attempt=attempt, retryable=retryable)
+        self.session.add(event)
+        self.session.flush()
+        return event
+
+    def failure_history(self, doc: Document) -> list[FailureEvent]:
+        """Every diagnosis for one document, oldest first."""
+        return list(self.session.scalars(
+            select(FailureEvent).where(FailureEvent.document_id == doc.id)
+            .order_by(FailureEvent.created_at, FailureEvent.id)))
 
     def record_validation(self, doc: Document, result: Any) -> None:
         """Store a `pdf_validation.ValidationResult` against the document.

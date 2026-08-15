@@ -213,3 +213,37 @@ def _sanitise(text: str) -> str:
         cleaned = cleaned.split("Traceback")[0].strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned[:400]
+
+
+def classify_text(technical: str, validation_status: str | None = None
+                  ) -> tuple[str, str, bool]:
+    """Classify a raw failure string. Returns (code, message, retryable).
+
+    The recording path's entry point: the pipeline has a detail string and
+    possibly a PDF verdict at the moment it gives up, and needs a code to store
+    before any document row has been re-read.
+    """
+    code = _from_validation(validation_status) or _from_text(technical or "")
+    if code is None:
+        code = UNKNOWN_ERROR
+    message, retryable = MESSAGES.get(code, MESSAGES[UNKNOWN_ERROR])
+    return code, message, retryable
+
+
+def describe(events: list[Any]) -> list[dict[str, Any]]:
+    """Render a stored history for display, oldest first.
+
+    The primary reason is the *last* event: it is where processing actually
+    stopped. Earlier ones are context - and the context is often the point,
+    because "watermark removal failed, then OCR found no text" is a different
+    problem from "OCR found no text" alone.
+    """
+    return [{
+        "stage": STAGES.get(e.code, (e.stage or "Processing").title()),
+        "code": e.code,
+        "message": e.message or MESSAGES.get(e.code, MESSAGES[UNKNOWN_ERROR])[0],
+        "technical": _sanitise(e.technical or ""),
+        "attempt": e.attempt,
+        "retryable": e.retryable,
+        "at": e.created_at,
+    } for e in events]
