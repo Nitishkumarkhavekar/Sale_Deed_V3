@@ -523,3 +523,22 @@ table.failed-ocr input[type=checkbox] { width: 15px; height: 15px; cursor: point
 :root[data-theme="dark"] .notice.warn { background: #33240f; color: #f0c48a; }
 :root[data-theme="dark"] .notice.info { background: #17253c; color: #a8c8f0; }
 :root[data-theme="dark"] .pdf-frame { background: #10121a; }
+
+/* Inline failure alert, shown beside the action it informs -------------- */
+/* Left-aligned inside a right-aligned action cell: a sentence reads from the
+   left however the numbers around it are set. Wraps rather than truncating,
+   because a cause the operator cannot finish reading is a cause they will
+   ignore. */
+.action-alert {
+    display: flex; align-items: flex-start; gap: 6px;
+    margin-bottom: 8px; padding: 6px 9px;
+    border-radius: var(--radius-btn);
+    border: 1px solid; text-align: left;
+    font-size: 12px; line-height: 1.4; font-weight: 600;
+    white-space: normal; max-width: 260px;
+}
+.action-alert .mark { flex: 0 0 auto; font-size: 13px; line-height: 1.3; }
+.action-alert.danger { background: #fdeaea; border-color: var(--danger); color: #7d0b13; }
+.action-alert.warn { background: var(--saffron-light); border-color: var(--saffron-dark); color: #6b3d00; }
+:root[data-theme="dark"] .action-alert.danger { background: #3a1418; color: #ffb3b8; }
+:root[data-theme="dark"] .action-alert.warn { background: #33240f; color: #f0c48a; }

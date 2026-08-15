@@ -555,3 +555,51 @@ class TestLongDeedsAndHonestStageStates:
                 b = UnitOfWork(session).batches.get(batch_id)
                 if b:
                     session.delete(b)
+
+    def test_the_cause_is_shown_beside_the_action_button(self, session_factory,
+                                                          app_service):
+        """The reason sits in the action cell, not only three columns to the
+        left. Reading a cell far from the control and coming back to decide is
+        exactly the step an operator skips."""
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            batch, docs = _batch_with_documents(uow, "alert_corrupt", 1)
+            _fail_ocr(uow, docs[0], reason="The PDF is incomplete - it ends early")
+            docs[0].validation_status = "INCOMPLETE_PDF"
+            docs[0].is_retryable = False
+            batch_id = batch.id
+
+        try:
+            html = app_service.render_page("failed_ocr", {"batch_id": batch_id})
+            assert "action-alert danger" in html, "no alert beside the action"
+            assert "incomplete or truncated" in html
+            # A file that cannot be opened must not offer a retry.
+            assert "btn-rerun-one" not in html
+        finally:
+            with session_scope(session_factory) as session:
+                b = UnitOfWork(session).batches.get(batch_id)
+                if b:
+                    session.delete(b)
+
+    def test_a_retryable_failure_alerts_as_a_warning_beside_a_retry(
+            self, session_factory, app_service):
+        """Severity follows the verdict: a damaged file is an error, a
+        recoverable one is a warning - and only the latter offers Rerun."""
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            batch, docs = _batch_with_documents(uow, "alert_warn", 1)
+            _fail_ocr(uow, docs[0], reason="OCR produced no text")
+            docs[0].validation_status = "PROCESSING_ERROR"
+            docs[0].is_retryable = True
+            batch_id = batch.id
+
+        try:
+            html = app_service.render_page("failed_ocr", {"batch_id": batch_id})
+            assert "action-alert warn" in html, "a retryable failure looked fatal"
+            assert "action-alert danger" not in html
+            assert "btn-rerun-one" in html, "a retryable failure offered no retry"
+        finally:
+            with session_scope(session_factory) as session:
+                b = UnitOfWork(session).batches.get(batch_id)
+                if b:
+                    session.delete(b)

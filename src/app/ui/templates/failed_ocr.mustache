@@ -122,6 +122,21 @@
           </td>
           <td class="muted">{{failed_at}}</td>
           <td class="num">
+            {{! The reason, right where the decision is made. Reading a table
+                cell three columns to the left and then coming back here to
+                choose an action is exactly the step an operator skips - so the
+                cause sits beside the button that acts on it.
+
+                Its severity is the verdict's: a damaged file is an error,
+                anything still retryable is a warning. }}
+            {{#cause}}
+            <div class="action-alert {{#is_corrupt}}danger{{/is_corrupt}}{{^is_corrupt}}warn{{/is_corrupt}}"
+                 title="{{cause_stage}} &middot; {{cause_code}}">
+              <span class="mark">{{#is_corrupt}}&#10006;{{/is_corrupt}}{{^is_corrupt}}&#9888;{{/is_corrupt}}</span>
+              <span>{{cause}}</span>
+            </div>
+            {{/cause}}
+
             {{! A damaged file fails identically on a retry, so the honest
                 action there is Revalidate - check it again once it has been
                 repaired or replaced. }}
