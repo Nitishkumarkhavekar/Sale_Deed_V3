@@ -104,19 +104,33 @@ def _serve(model: Path, port: int, gpu_layers: int, ctx: int):
 
 
 def _complete(port: int, prompt: str, text: str, max_tokens: int) -> str:
+    """Ask exactly as production asks.
+
+    `/v1/chat/completions` with a single user turn, because that is the format
+    the model was finetuned on and what `LlamaCppEngine` sends. The first
+    version posted a raw concatenated prompt to `/completion`, which bypasses
+    the chat template: the model received a shape it had never seen, returned
+    prose, and all ten deeds came back unparseable - looking exactly as though
+    the *model* had failed. Same class of fault as R-040.
+
+    A baseline that does not reproduce the production request measures the
+    harness, not the quantisation.
+    """
     payload = json.dumps({
-        "prompt": f"{prompt}\n\n{text}",
-        "n_predict": max_tokens,
+        "messages": [{"role": "user", "content": f"{prompt}\n\n{text}"}],
+        "max_tokens": max_tokens,
         # Zero, as in production: a baseline built on sampled output would
         # measure randomness rather than quantisation.
         "temperature": 0.0,
         "repeat_penalty": 1.0,
     }).encode()
     request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/completion", data=payload,
+        f"http://127.0.0.1:{port}/v1/chat/completions", data=payload,
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=1800) as response:
-        return json.loads(response.read()).get("content") or ""
+        body = json.loads(response.read())
+    choices = body.get("choices") or [{}]
+    return (choices[0].get("message") or {}).get("content") or ""
 
 
 def run(model: Path, limit: int, out: Path, gpu_layers: int, ctx: int) -> int:
@@ -162,6 +176,11 @@ def run(model: Path, limit: int, out: Path, gpu_layers: int, ctx: int) -> int:
                 "seconds": round(elapsed, 2),
                 "parsed_ok": parsed is not None,
                 "extraction": parsed,
+                # Kept so an unparseable answer can be read rather than guessed
+                # at. The first run returned 0/10 and diagnosing it needed a
+                # code read, because nothing recorded what the model actually
+                # said. Bounded: a repetition loop runs to the token ceiling.
+                "raw": raw[:2000],
             })
             print(f"  {n}/{len(samples)} {sample['document'][:28]:<30} "
                   f"{elapsed:6.1f}s  {'ok' if parsed else 'UNPARSEABLE'}")
