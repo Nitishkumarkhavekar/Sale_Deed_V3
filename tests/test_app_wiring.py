@@ -805,3 +805,131 @@ class TestMachineDetailsLivesOnSettings:
         for forbidden in ("urlopen", "requests.", "self.ai.health(", "self.ai.profile("):
             assert forbidden not in body, f"_machine now fetches: {forbidden}"
         assert "self.status_service" in body
+
+
+class TestFileDialogsRunOnTheGuiThread:
+    """Every slot that can open a file dialog must be registered as GUI-thread.
+
+    Qt widgets may only be created on the thread owning the QApplication.
+    `Bridge._GUI_THREAD_ACTIONS` is the list that arranges it, and it is
+    hand-maintained - exactly the kind that gets forgotten when a page is added.
+    It was: the OCR page shipped with `ocr_tool` missing, and every Browse click
+    put a RuntimeError banner on screen instead of a dialog.
+
+    So the requirement is derived from the service's own source rather than
+    restated here. A new page that opens a picker fails this test until it is
+    registered, which is the only way a list like this stays correct.
+    """
+
+    @staticmethod
+    def _picker_users() -> dict[str, set[str]]:
+        """{service method -> action strings that reach `file_picker`}.
+
+        An empty set means the method opens a dialog unconditionally, so the
+        whole slot must be GUI-thread rather than one of its actions.
+        """
+        import ast
+
+        source = (Path(__file__).resolve().parents[1] / "src" / "app"
+                  / "services.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        def mentions_picker(node: ast.AST) -> bool:
+            return any(
+                isinstance(n, ast.Constant) and n.value == "file_picker"
+                or isinstance(n, ast.Attribute) and n.attr == "file_picker"
+                for n in ast.walk(node))
+
+        found: dict[str, set[str]] = {}
+        for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+            for fn in (n for n in cls.body
+                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+                if not mentions_picker(fn):
+                    continue
+                actions: set[str] = set()
+                for branch in (n for n in ast.walk(fn) if isinstance(n, ast.If)):
+                    if not mentions_picker(branch):
+                        continue
+                    test = branch.test
+                    if (isinstance(test, ast.Compare)
+                            and isinstance(test.left, ast.Name)
+                            and test.left.id == "action"
+                            and test.comparators
+                            and isinstance(test.comparators[0], ast.Constant)):
+                        actions.add(str(test.comparators[0].value))
+                found[fn.name] = actions
+        return found
+
+    @staticmethod
+    def _slot_targets() -> dict[str, set[str]]:
+        """{bridge slot -> service methods it calls}."""
+        import ast
+
+        source = (Path(__file__).resolve().parents[1] / "src" / "app" / "ui"
+                  / "bridge.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        targets: dict[str, set[str]] = {}
+        for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+            if cls.name != "Bridge":
+                continue
+            for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef)):
+                called = {
+                    node.attr for node in ast.walk(fn)
+                    if isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "service"}
+                if called:
+                    targets[fn.name] = called
+        return targets
+
+    def test_the_scan_finds_the_known_picker_users(self):
+        """Guards the guard. A parser that silently matched nothing would make
+        every assertion below vacuously true."""
+        users = self._picker_users()
+        assert "watermark" in users, users
+        assert "ocr_tool" in users, users
+
+    def test_every_slot_that_opens_a_dialog_is_registered(self):
+        from app.ui.bridge import _GUI_THREAD, _GUI_THREAD_ACTIONS
+
+        users = self._picker_users()
+        targets = self._slot_targets()
+
+        for slot, methods in targets.items():
+            reached = methods & set(users)
+            if not reached:
+                continue
+            assert slot in _GUI_THREAD or slot in _GUI_THREAD_ACTIONS, (
+                f"bridge slot {slot!r} reaches {sorted(reached)}, which opens a "
+                "file dialog, but is not registered as GUI-thread - every "
+                "Browse click will raise instead of opening the dialog")
+
+    def test_the_registered_actions_are_the_ones_that_open_a_dialog(self):
+        """Registering the slot is not enough - the *action* has to match, or
+        the dispatch sends that particular call to a pool worker anyway."""
+        from app.ui.bridge import _GUI_THREAD, _GUI_THREAD_ACTIONS
+
+        users = self._picker_users()
+        for slot, methods in self._slot_targets().items():
+            if slot in _GUI_THREAD:
+                continue
+            for method in methods & set(users):
+                needed = users[method]
+                if not needed:
+                    continue
+                registered = _GUI_THREAD_ACTIONS.get(slot, set())
+                missing = needed - registered
+                assert not missing, (
+                    f"{slot!r} opens a dialog for action(s) {sorted(missing)} "
+                    f"but only {sorted(registered)} are registered")
+
+    def test_the_dispatch_actually_routes_those_calls(self):
+        """End of the chain: the list is consulted and answers correctly."""
+        from app.ui.bridge import Bridge
+
+        assert Bridge._needs_gui_thread("ocr_tool", {"action": "browse"}) is True
+        assert Bridge._needs_gui_thread("watermark", {"action": "browse"}) is True
+        # A non-dialog action must stay on the pool: running OCR on the GUI
+        # thread would freeze the window for the minutes a deed takes.
+        assert Bridge._needs_gui_thread("ocr_tool", {"action": "run"}) is False
+        assert Bridge._needs_gui_thread("ocr_tool", {}) is False

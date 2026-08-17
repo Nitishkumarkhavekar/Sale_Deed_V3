@@ -51,7 +51,14 @@ _INLINE = {"status"}
 _GUI_THREAD = {"pick_files", "pick_save_path", "open_path"}
 
 #: Actions within a slot that also open a dialog, and so share that constraint.
-_GUI_THREAD_ACTIONS = {"watermark": {"browse"}}
+#:
+#: Every slot that can reach `AppService.file_picker` belongs here, keyed by the
+#: action that does it. Omitting one is not a small mistake: the service raises
+#: rather than opening the dialog, so the operator sees a RuntimeError banner and
+#: the button simply does not work. `test_app_wiring` derives the required set
+#: from the service's own source, because this list is exactly the kind that gets
+#: forgotten when a page is added - as it was for `ocr_tool`.
+_GUI_THREAD_ACTIONS = {"watermark": {"browse"}, "ocr_tool": {"browse"}}
 
 
 class Bridge(QObject):
