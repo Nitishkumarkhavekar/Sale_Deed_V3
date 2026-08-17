@@ -1,7 +1,7 @@
 # Installation Report
 
-**Generated:** 2026-08-17T11:30:54
-**Duration:** 18s
+**Generated:** 2026-08-17T11:46:07
+**Duration:** 17s
 
 ## System
 
@@ -17,7 +17,7 @@
 | cores_physical | 8 |
 | cores_logical | 16 |
 | ram_total_gb | 7.4 |
-| ram_available_gb | 1.5 |
+| ram_available_gb | 1.8 |
 | cuda_available | True |
 | cuda_version | 12.7 |
 | driver_version | 566.07 |
@@ -36,12 +36,12 @@
 | Folders | missing | 1 would be created | 0.0 |
 | Visual C++ runtime | found | present | 0.0 |
 | Python 3.12 (OCR) | found | present | 0.1 |
-| Python packages | found | 6 import cleanly | 2.8 |
-| Migrations | found | already at head | 1.6 |
+| Python packages | found | 6 import cleanly | 2.6 |
+| Migrations | found | already at head | 1.5 |
 | Configuration | found | .env exists | 0.0 |
 | Inference runtime | found | llama-server.exe | 0.0 |
 | Extraction model | found | deeds-v6_7-f16.gguf (7.24 GB) | 0.0 |
-| vLLM engine | found | ready in models/vllm-env | 8.4 |
+| vLLM engine | found | ready in models/vllm-env | 7.6 |
 | Translation model | found | nllb-200-distilled-600M (2.3 GB) | 0.0 |
 | OCR (Surya) | found | via venv_new | 0.1 |
 
