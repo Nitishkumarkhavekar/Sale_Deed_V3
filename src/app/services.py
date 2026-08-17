@@ -221,6 +221,10 @@ class AppService:
         self.watermark_files = Selection()
         self._watermark_scans: dict[str, Any] = {}
         self._watermark_removals: dict[str, Any] = {}
+        #: Source path -> where its cleaned copy was written. Kept so the page
+        #: can show each file's destination and "Open Output Folder" can open
+        #: the folder actually used rather than a guess.
+        self._watermark_outputs: dict[str, Path] = {}
 
         # OCR tool page state, held the same way and for the same reason.
         #
@@ -1397,6 +1401,7 @@ class AppService:
             self.watermark_files = Selection()
             self._watermark_scans.clear()
             self._watermark_removals.clear()
+            self._watermark_outputs.clear()
             return {"total": 0}
 
         if action == "scan":
@@ -1411,13 +1416,26 @@ class AppService:
             return {"scanned": scanned}
 
         if action == "remove":
-            WATERMARK_DIR.mkdir(parents=True, exist_ok=True)
-            removed = 0
+            removed = failed = 0
+            self._watermark_outputs.clear()
             for path in self.watermark_files.paths:
                 result = self._watermark_scans.get(str(path))
                 if result is None or not result.confirmed:
                     continue
-                target = WATERMARK_DIR / f"{path.stem}_clean{path.suffix}"
+                try:
+                    target = self._cleaned_target(path)
+                except OSError as exc:
+                    # Creating the output folder is the first thing that can
+                    # fail, and it fails for reasons the operator can act on -
+                    # a read-only drive, a network share that has gone away.
+                    # Reported per file rather than aborting the batch, because
+                    # a selection can span several folders and only one of them
+                    # may be the problem.
+                    self._watermark_removals[str(path)] = wm.RemovalResult(
+                        path, None,
+                        error=self._filesystem_reason(exc, path.parent))
+                    failed += 1
+                    continue
                 try:
                     # allow_lossy stays False. A raster watermark is burned into
                     # the scan, so the pixels beneath were never captured -
@@ -1427,15 +1445,109 @@ class AppService:
                     self._watermark_removals[str(path)] = outcome
                     if outcome.ok:
                         removed += 1
+                        self._watermark_outputs[str(path)] = target
+                    else:
+                        failed += 1
+                except OSError as exc:
+                    # Disk full, target locked by a viewer, permission revoked
+                    # mid-run. `wm.remove` catches most of these itself, but not
+                    # every path through PyMuPDF's save raises inside it.
+                    self._watermark_removals[str(path)] = wm.RemovalResult(
+                        path, None, error=self._filesystem_reason(exc, target))
+                    failed += 1
                 except Exception as exc:  # noqa: BLE001
                     self._record_error("watermark removal", exc)
-            return {"removed": removed, "output_dir": str(WATERMARK_DIR)}
+                    self._watermark_removals[str(path)] = wm.RemovalResult(
+                        path, None, error=f"{type(exc).__name__}: {exc}")
+                    failed += 1
+            folders = sorted({str(p.parent) for p in self._watermark_outputs.values()})
+            return {"removed": removed, "failed": failed,
+                    "output_dir": folders[0] if folders else "",
+                    "output_dirs": folders}
 
         if action == "open":
-            WATERMARK_DIR.mkdir(parents=True, exist_ok=True)
-            return {"path": str(WATERMARK_DIR)}
+            target = self._watermark_output_dir()
+            target.mkdir(parents=True, exist_ok=True)
+            return {"path": str(target)}
 
         raise ValueError(f"unknown watermark action {action!r}")
+
+    #: Where cleaned copies go, relative to the folder the deeds came from.
+    CLEANED_SUBFOLDER = "Cleaned Watermark"
+
+    def _cleaned_target(self, source: Path) -> Path:
+        """Where `source`'s cleaned copy is written.
+
+        Beside the deed rather than in a shared runtime folder: an operator
+        working through a folder of deeds wants the results with them, not
+        somewhere under the installation directory. The subfolder is created if
+        absent and reused if present - it is `mkdir(exist_ok=True)`, so a second
+        run adds to the folder rather than making a second one.
+
+        The filename is the original, unchanged. That is safe because the copy
+        lands in a *different directory* from the source, so the input can never
+        be overwritten - which is the one outcome that would be unrecoverable.
+
+        The exception is a deed that is itself already inside a `Cleaned
+        Watermark` folder - cleaning a cleaned file. There the subfolder would
+        be the source's own directory and the original name would overwrite the
+        input, so that case keeps the older `_clean` suffix instead. Nesting a
+        second `Cleaned Watermark` inside the first would be tidier to look at
+        and worse to use.
+        """
+        parent = source.parent
+        if parent.name == self.CLEANED_SUBFOLDER:
+            return parent / f"{source.stem}_clean{source.suffix}"
+        folder = parent / self.CLEANED_SUBFOLDER
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / source.name
+
+    def _watermark_output_dir(self) -> Path:
+        """What "Open Output Folder" should show.
+
+        The folder the last run actually wrote to. Falls back to the shared
+        runtime directory only when nothing has been cleaned this session, so
+        the button is never dead.
+        """
+        for target in self._watermark_outputs.values():
+            if target.parent.is_dir():
+                return target.parent
+        for path in self.watermark_files.paths:
+            candidate = path.parent / self.CLEANED_SUBFOLDER
+            if candidate.is_dir():
+                return candidate
+        return WATERMARK_DIR
+
+    @staticmethod
+    def _filesystem_reason(exc: OSError, where: Path) -> str:
+        """A filesystem failure in words an operator can act on.
+
+        `[Errno 28]` and `WinError 32` are not answers. Each of these has a
+        different remedy - free space, close the file, ask for write access -
+        and the whole point of naming them is that the operator knows which.
+        """
+        import errno
+
+        winerror = getattr(exc, "winerror", None)
+        if exc.errno == errno.ENOSPC:
+            return (f"The disk holding {where.parent} is full. Free some space "
+                    "and run the removal again.")
+        if exc.errno == errno.EACCES or isinstance(exc, PermissionError):
+            # On Windows a locked file and a permissions problem both surface as
+            # PermissionError; WinError 32 distinguishes them, and the remedies
+            # are completely different.
+            if winerror == 32:
+                return (f"{where.name} is open in another program. Close it and "
+                        "run the removal again.")
+            return (f"No permission to write to {where.parent}. Choose a folder "
+                    "you can write to, or ask for access to this one.")
+        if exc.errno == errno.EROFS:
+            return f"{where.parent} is on a read-only drive."
+        if exc.errno == errno.ENAMETOOLONG:
+            return f"The path for {where.name} is too long for this filesystem."
+        if exc.errno == errno.ENOENT:
+            return f"{where.parent} no longer exists."
+        return f"Could not write to {where.parent}: {exc.strerror or exc}"
 
     # -- OCR tool ----------------------------------------------------------
     #
@@ -2264,7 +2376,10 @@ class AppService:
 
             row: dict[str, Any] = {"name": path.name, "pages": "", "detected": "",
                                    "detect_class": "", "method": "",
-                                   "done": False, "result": "", "result_class": ""}
+                                   "done": False, "result": "", "result_class": "",
+                                   # Where this file's clean copy went, and why
+                                   # it did not go anywhere if it failed.
+                                   "output": "", "reason": ""}
 
             if scan is not None:
                 row["pages"] = scan.page_count
@@ -2289,9 +2404,15 @@ class AppService:
 
             if removal is not None:
                 row["done"] = True
+                out = self._watermark_outputs.get(key)
+                if out is not None:
+                    row["output"] = str(out)
                 if removal.error:
                     row["result"] = "failed"
                     row["result_class"] = "danger"
+                    # The existing reason display, unchanged in kind: whatever
+                    # the remover said, in full, rather than a bare "failed".
+                    row["reason"] = removal.error
                 elif removal.fidelity is Fidelity.LOSSLESS and removal.removed:
                     row["result"] = "lossless"
                     row["result_class"] = "ok"
@@ -2305,17 +2426,43 @@ class AppService:
 
         done = len(self._watermark_removals)
         total = len(self.watermark_files.paths)
+        cleaned = sum(1 for r in self._watermark_removals.values() if r.ok)
+        failed = done - cleaned
+
+        # Where the results will go, shown *before* the run as well as after -
+        # an operator should not have to clean a folder of deeds to find out
+        # where the copies landed. One folder per source folder, because a
+        # selection can span several.
+        destinations = sorted({
+            str(self._destination_for(path)) for path in self.watermark_files.paths})
         return {
             "has_files": bool(files),
             "can_remove": removable > 0,
-            "has_output": WATERMARK_DIR.is_dir() and any(WATERMARK_DIR.glob("*.pdf")),
+            "output_dir": destinations[0] if destinations else "",
+            "output_dirs": [{"path": d} for d in destinations],
+            "many_outputs": len(destinations) > 1,
+            "subfolder": self.CLEANED_SUBFOLDER,
+            "has_output": any(Path(d).is_dir() for d in destinations) or (
+                WATERMARK_DIR.is_dir() and any(WATERMARK_DIR.glob("*.pdf"))),
             # Scanning and removal are synchronous, so a render never catches
             # them mid-flight. The block stays because the template models it.
             "running": False,
             "done": done, "total": total,
+            "cleaned": cleaned, "failed": failed,
+            "has_run": done > 0,
             "percent": int(done / total * 100) if total else 0,
             "files": files,
         }
+
+    def _destination_for(self, source: Path) -> Path:
+        """The folder a file's clean copy would go to. Creates nothing.
+
+        Separate from `_cleaned_target` on purpose: rendering a page must not
+        have the side effect of making directories all over an operator's disk
+        for files they have merely selected.
+        """
+        parent = source.parent
+        return parent if parent.name == self.CLEANED_SUBFOLDER             else parent / self.CLEANED_SUBFOLDER
 
     def _help(self, _params: dict[str, Any]) -> dict[str, Any]:
         return {

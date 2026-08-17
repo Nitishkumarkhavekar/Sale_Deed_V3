@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 import urllib.error
 import urllib.request
 
@@ -24,6 +25,7 @@ import pytest
 
 from ai_server.engines.mock import MockEngine
 from ai_server.profiles import Profile, QUANT_LADDER
+from ai_server.resources import ResourceGovernor
 from ai_server.server import AiServer, make_http_server
 
 
@@ -35,11 +37,37 @@ def _profile():
         reason="test")
 
 
+class _FixedGovernor(ResourceGovernor):
+    """The real governor with its admission decision pinned.
+
+    A subclass rather than a stand-in: `AiServer.start` calls `start`, the queue
+    calls `plan`, and a hand-rolled object silently lacks whichever of those is
+    reached next - turning a genuine result into an AttributeError inside the
+    test. Only the one decision under test is overridden.
+
+    It exists because the real decision is resource-dependent, and correctly so:
+    these tests failed intermittently with 503 whenever the rest of the suite
+    happened to be holding memory. The server was behaving properly; the test was
+    asserting something untrue of a busy machine. Pressure has its own test at the
+    bottom of this file.
+    """
+
+    def __init__(self, *, admit: bool, reason: str = "pinned for tests") -> None:
+        super().__init__()
+        self._admit = admit
+        self._reason = reason
+
+    def plan(self):
+        return replace(super().plan(), admit_new_work=self._admit,
+                       reason=self._reason)
+
+
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
     """A real server on a real port, served by the mock engine."""
     model_dir = tmp_path_factory.mktemp("model")
-    app = AiServer(MockEngine(), _profile(), model_dir)
+    app = AiServer(MockEngine(), _profile(), model_dir,
+                   governor=_FixedGovernor(admit=True))
     app.start()
     # Port 0 lets the OS choose, so a developer already running the real
     # server on 8077 does not see this suite fail for the wrong reason.
@@ -245,3 +273,57 @@ class TestTheMockEngineItself:
         assert engine.health().ready is True
         engine.stop()
         assert engine.health().ready is False
+
+
+class TestAdmissionUnderPressure:
+    """The behaviour the fixture above deliberately holds constant.
+
+    A 503 from `/extract` is not a fault - it is the governor declining to pile
+    more work onto a machine that is already short of memory, which is what stops
+    a batch from dying with a CUDA OOM halfway through. Worth its own test
+    precisely because the other tests suppress it.
+    """
+
+    @pytest.fixture()
+    def strained(self, tmp_path):
+        app = AiServer(MockEngine(), _profile(), tmp_path,
+                       governor=_FixedGovernor(
+                           admit=False, reason="only 200 MiB free"))
+        app.start()
+        httpd = make_http_server(app, "127.0.0.1", 0)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{httpd.server_address[1]}"
+        finally:
+            httpd.shutdown()
+            app.stop()
+
+    def test_work_is_refused_with_503_not_500(self, strained):
+        status, body = _post(strained, "/extract",
+                             {"ocr_text": "a deed", "document_id": "p-1"})
+        assert status == 503
+        assert body.get("error")
+
+    def test_the_refusal_says_it_is_worth_retrying(self, strained):
+        """The distinction a caller acts on: retry shortly, or give up."""
+        _status, body = _post(strained, "/extract",
+                              {"ocr_text": "a deed", "document_id": "p-2"})
+        assert body.get("retry") is True
+
+    def test_the_refusal_explains_itself(self, strained):
+        _status, body = _post(strained, "/extract",
+                              {"ocr_text": "a deed", "document_id": "p-3"})
+        message = str(body.get("error", ""))
+        # The reason, which is the actionable half. The pressure *label* comes
+        # from the real snapshot and so depends on the machine running the
+        # test - asserting a particular one would pin the test to this laptop.
+        assert "200 MiB free" in message
+        assert "system pressure is" in message
+
+    def test_read_only_routes_still_answer_under_pressure(self, strained):
+        """Refusing new work must not make the server undiagnosable - /health is
+        exactly what an operator reaches for when work is being refused."""
+        for route in ("/health", "/jobs", "/hardware"):
+            status, _ = _get(strained, route)
+            assert status == 200, route

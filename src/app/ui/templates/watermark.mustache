@@ -20,9 +20,26 @@
     <div class="btn-row" style="justify-content:center;margin-top:12px">
       <button class="btn-primary" id="btn-wm-browse">Browse PDFs</button>
     </div>
-    <div class="hint">Originals are never modified. Cleaned copies are written alongside.</div>
+    <div class="hint">Originals are never modified. Cleaned copies are written
+      into a <strong>{{subfolder}}</strong> folder beside them.</div>
   </div>
 </div>
+
+{{! Where the results go, shown before the run as well as after - an operator
+    should not have to clean a folder of deeds to find out where the copies
+    landed. One folder per source folder, since a selection can span several. }}
+{{#has_files}}
+<div class="notice info">
+  <strong>Cleaned copies will be saved to</strong>
+  {{^many_outputs}}<code>{{output_dir}}</code>{{/many_outputs}}
+  {{#many_outputs}}
+  <span>these folders, one beside each folder of deeds you chose:</span>
+  <ul style="margin:6px 0 0 18px">
+    {{#output_dirs}}<li><code>{{path}}</code></li>{{/output_dirs}}
+  </ul>
+  {{/many_outputs}}
+</div>
+{{/has_files}}
 
 {{#has_files}}
 <div class="card">
@@ -30,7 +47,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr><th>File</th><th class="num">Pages</th><th>Detected</th>
-        <th>Method</th><th>Result</th></tr></thead>
+        <th>Method</th><th>Result</th><th>Saved to / Reason</th></tr></thead>
       <tbody>
       {{#files}}
         <tr>
@@ -41,6 +58,12 @@
           <td>{{method}}</td>
           <td>{{#done}}<span class="badge {{result_class}}">{{result}}</span>{{/done}}
               {{^done}}<span class="muted">pending</span>{{/done}}</td>
+          <td class="script">
+            {{#output}}<code>{{output}}</code>{{/output}}
+            {{! The existing reason display: whatever the remover said, in full,
+                never a bare "failed". }}
+            {{#reason}}{{reason}}{{/reason}}
+          </td>
         </tr>
       {{/files}}
       </tbody>
@@ -49,16 +72,21 @@
 </div>
 {{/has_files}}
 
-{{#running}}
+{{#has_run}}
 <div class="card tight">
   <h2>Progress</h2>
   <div class="progress-row">
-    <span class="name">Processing</span>
+    <span class="name">Processed</span>
     <span class="bar"><span style="width:{{percent}}%"></span></span>
-    <span class="count">{{done}} / {{total}}</span>
+    <span class="count">{{done}} / {{total}} &middot; {{percent}}%</span>
+  </div>
+  <div class="tiles" style="margin-top:14px">
+    <div class="tile violet"><div class="value">{{total}}</div><div class="label">Selected</div></div>
+    <div class="tile ok"><div class="value">{{cleaned}}</div><div class="label">Cleaned</div></div>
+    <div class="tile danger"><div class="value">{{failed}}</div><div class="label">Failed</div></div>
   </div>
 </div>
-{{/running}}
+{{/has_run}}
 
 <div class="btn-row">
   <button class="btn-primary" id="btn-wm-scan" {{^has_files}}disabled{{/has_files}}>Detect Watermarks</button>

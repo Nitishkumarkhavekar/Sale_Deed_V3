@@ -530,10 +530,23 @@
             if (action === "scan" && r.scanned === 0) {
               toast("Nothing to scan - choose some PDFs first.", "warn");
             } else if (action === "remove") {
-              toast(r.removed
-                ? "Cleaned " + r.removed + " file(s) into " + r.output_dir
-                : "No removable watermarks were found.",
-                r.removed ? "ok" : "warn");
+              // Names the destination, and the failure count when there is
+              // one - "Cleaned 8 file(s)" beside two silent failures would
+              // read as a complete success.
+              let msg;
+              if (r.removed) {
+                msg = "Cleaned " + r.removed + " file(s) into <code>"
+                    + r.output_dir + "</code>";
+                if (r.output_dirs && r.output_dirs.length > 1) {
+                  msg += " and " + (r.output_dirs.length - 1) + " other folder(s)";
+                }
+                if (r.failed) msg += " &middot; " + r.failed + " failed";
+              } else {
+                msg = r.failed
+                  ? r.failed + " file(s) could not be cleaned - see the table."
+                  : "No removable watermarks were found.";
+              }
+              toast(msg, r.removed ? (r.failed ? "warn" : "ok") : "warn");
             } else if (action === "open" && r.path) {
               call("open_path", { path: r.path })
                 .catch(function () { toast("Cleaned copies are in " + r.path, "info"); });
