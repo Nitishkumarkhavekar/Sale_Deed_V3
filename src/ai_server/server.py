@@ -563,6 +563,12 @@ def build_default(
         from .engines.mock import MockEngine
 
         engine = MockEngine()
+    elif engine_name == "vllm":
+        # Serves the *unquantised* checkpoint, so `model_dir` is the model -
+        # the .gguf is llama.cpp's format and vLLM cannot read it.
+        from .engines.vllm import VllmEngine
+
+        engine = VllmEngine(model_dir, profile, port=port + 1)
     else:
         from .engines.llamacpp import LlamaCppEngine
 
@@ -596,7 +602,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Sale Deed AI server")
     ap.add_argument("--model", default=str(paths.GGUF_DIR / "deeds-v6_7-Q4_K_M.gguf"))
     ap.add_argument("--model-dir", default=str(paths.AI_SERVER / "gemma4b-text"))
-    ap.add_argument("--engine", default="llamacpp", choices=("llamacpp", "mock"))
+    ap.add_argument("--engine", default="llamacpp",
+                    choices=("llamacpp", "vllm", "mock"),
+                    help="llamacpp serves the quantised .gguf; vllm serves the "
+                         "full checkpoint and needs a card that can hold it")
     ap.add_argument("--binary", default=str(paths.TOOLS_DIR / "llamacpp" / "llama-server.exe"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8077)
