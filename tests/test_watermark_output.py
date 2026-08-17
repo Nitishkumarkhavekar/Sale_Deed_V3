@@ -185,20 +185,41 @@ class TestTheOriginalSurvives:
         cleaned = deeds[0].parent / "Cleaned Watermark" / deeds[0].name
         assert not wm.scan(cleaned).confirmed
 
-    def test_cleaning_an_already_cleaned_file_does_not_overwrite_it(
+    def test_a_file_already_in_the_output_folder_is_refused_not_overwritten(
             self, service, deeds):
-        """The one case where the subfolder rule would point at the source's own
-        directory. It falls back to the `_clean` suffix rather than writing the
-        input."""
+        """The one case where the subfolder rule points at the source's own
+        directory. It refuses with a reason rather than decorating the name."""
+        from app.services import _AlreadyInOutputFolder
+
         _clean(service, deeds[:1])
         cleaned = deeds[0].parent / "Cleaned Watermark" / deeds[0].name
         before = cleaned.read_bytes()
 
-        target = service._cleaned_target(cleaned)
-
-        assert target != cleaned
-        assert target.parent == cleaned.parent
+        with pytest.raises(_AlreadyInOutputFolder, match="already inside"):
+            service._cleaned_target(cleaned)
         assert cleaned.read_bytes() == before
+
+    def test_that_refusal_reaches_the_page_as_a_reason(self, pymupdf, service,
+                                                       tmp_path):
+        """It must fail that one file, not the run - and say why."""
+        folder = tmp_path / "deeds" / "Cleaned Watermark"
+        folder.mkdir(parents=True)
+        stray = _watermarked(pymupdf, folder / "stray.pdf")
+
+        result = _clean(service, [stray])
+
+        assert result["removed"] == 0
+        assert result["failed"] == 1
+        row = service._watermark_page({})["files"][0]
+        assert row["result"] == "failed"
+        assert "already inside" in row["reason"]
+
+    def test_no_output_name_ever_carries_a_clean_suffix(self, service, deeds):
+        """The decoration is gone everywhere, not just in the common case."""
+        _clean(service, deeds)
+        folder = deeds[0].parent / "Cleaned Watermark"
+        for produced in folder.glob("*.pdf"):
+            assert "_clean" not in produced.stem, produced.name
 
 
 # ---------------------------------------------------------------------------
@@ -368,10 +389,23 @@ class TestThePageShowsTheDestination:
         opened = service.watermark("open")["path"]
         assert opened == str(deeds[0].parent / "Cleaned Watermark")
 
-    def test_open_output_folder_still_works_before_any_run(self, service):
-        """The button must never be dead."""
-        path = service.watermark("open")["path"]
-        assert path
+    def test_open_output_folder_never_leads_to_the_legacy_directory(
+            self, service, deeds):
+        """The pre-change shared folder still holds copies under the old
+        `_clean` names. Opening it to look for today's output is exactly how an
+        operator concludes the rename never happened - which is how this was
+        reported."""
+        from app.services import WATERMARK_DIR
+
+        service.watermark_files.add(deeds)
+        assert service._watermark_output_dir() != WATERMARK_DIR
+
+        _clean(service, deeds)
+        assert service._watermark_output_dir() != WATERMARK_DIR
+
+    def test_the_button_is_disabled_when_there_is_nothing_to_open(self, service):
+        """Rather than enabled and pointing somewhere misleading."""
+        assert service._watermark_page({})["has_output"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -100,6 +100,15 @@ log = logging.getLogger("saledeed.batches")
 
 #: Batches the management table shows. Everything that is not finished - a
 #: stopped batch had no home before this and was unreachable from the UI.
+
+class _AlreadyInOutputFolder(RuntimeError):
+    """A deed selected from inside the output folder it would be written to.
+
+    Its own type so the removal loop can turn it into a per-file reason instead
+    of aborting the run, and so it is never confused with a filesystem error -
+    nothing is wrong with the disk.
+    """
+
 LIVE_BATCH_STATES = (BatchState.QUEUED, BatchState.RUNNING, BatchState.STOPPING,
                      BatchState.STOPPED, BatchState.PAUSED)
 
@@ -1424,6 +1433,11 @@ class AppService:
                     continue
                 try:
                     target = self._cleaned_target(path)
+                except _AlreadyInOutputFolder as exc:
+                    self._watermark_removals[str(path)] = wm.RemovalResult(
+                        path, None, error=str(exc))
+                    failed += 1
+                    continue
                 except OSError as exc:
                     # Creating the output folder is the first thing that can
                     # fail, and it fails for reasons the operator can act on -
@@ -1488,16 +1502,24 @@ class AppService:
         lands in a *different directory* from the source, so the input can never
         be overwritten - which is the one outcome that would be unrecoverable.
 
-        The exception is a deed that is itself already inside a `Cleaned
-        Watermark` folder - cleaning a cleaned file. There the subfolder would
-        be the source's own directory and the original name would overwrite the
-        input, so that case keeps the older `_clean` suffix instead. Nesting a
-        second `Cleaned Watermark` inside the first would be tidier to look at
-        and worse to use.
+        The name is never decorated - no `_clean` suffix, no counter. A cleaned
+        deed keeps the registration number it is filed under, because that is
+        what anyone looking for it will search for.
+
+        One case cannot be served that way: a deed already sitting inside a
+        `Cleaned Watermark` folder. There the subfolder rule points at the
+        source's own directory, so writing the original name would overwrite the
+        input. Rather than decorate the name, this refuses - the file is in the
+        output folder, and the fix is to clean it from where the originals live.
+        Nesting a second `Cleaned Watermark` inside the first would keep the name
+        at the cost of a directory tree nobody can navigate.
         """
         parent = source.parent
         if parent.name == self.CLEANED_SUBFOLDER:
-            return parent / f"{source.stem}_clean{source.suffix}"
+            raise _AlreadyInOutputFolder(
+                f"{source.name} is already inside a {self.CLEANED_SUBFOLDER!r} "
+                "folder. Clean it from the folder holding the original deeds, so "
+                "the copy does not overwrite it.")
         folder = parent / self.CLEANED_SUBFOLDER
         folder.mkdir(parents=True, exist_ok=True)
         return folder / source.name
@@ -1505,9 +1527,11 @@ class AppService:
     def _watermark_output_dir(self) -> Path:
         """What "Open Output Folder" should show.
 
-        The folder the last run actually wrote to. Falls back to the shared
-        runtime directory only when nothing has been cleaned this session, so
-        the button is never dead.
+        The folder the last run wrote to, or the destination of the current
+        selection. Never the pre-change shared directory under the installation:
+        it still holds copies written before this feature moved, under the old
+        `_clean` names, and sending an operator there to look for today's output
+        is how they conclude the rename never happened.
         """
         for target in self._watermark_outputs.values():
             if target.parent.is_dir():
@@ -1516,6 +1540,11 @@ class AppService:
             candidate = path.parent / self.CLEANED_SUBFOLDER
             if candidate.is_dir():
                 return candidate
+        # Nothing cleaned and nothing selected. The selection's would-be
+        # destination is the honest answer even before it exists; `has_output`
+        # keeps the button disabled until there is something to open.
+        if self.watermark_files.paths:
+            return self._destination_for(self.watermark_files.paths[0])
         return WATERMARK_DIR
 
     @staticmethod
@@ -2442,8 +2471,11 @@ class AppService:
             "output_dirs": [{"path": d} for d in destinations],
             "many_outputs": len(destinations) > 1,
             "subfolder": self.CLEANED_SUBFOLDER,
-            "has_output": any(Path(d).is_dir() for d in destinations) or (
-                WATERMARK_DIR.is_dir() and any(WATERMARK_DIR.glob("*.pdf"))),
+            # Only a real destination counts. Including the legacy shared
+            # folder here left the button enabled on a fresh session and opened
+            # a directory of pre-rename `_clean` copies.
+            "has_output": any(Path(d).is_dir() and any(Path(d).glob("*.pdf"))
+                              for d in destinations),
             # Scanning and removal are synchronous, so a render never catches
             # them mid-flight. The block stays because the template models it.
             "running": False,
