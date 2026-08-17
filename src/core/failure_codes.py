@@ -166,7 +166,8 @@ def classify(document: Any) -> dict[str, Any] | None:
     # the bytes, while every other stage only saw a symptom.
     code = _from_validation(validation_status)
     if code is None:
-        code = _from_text(technical) or _STAGE_FALLBACK.get(stage, UNKNOWN_ERROR)
+        code = _from_text(strip_paths(technical)) \
+            or _STAGE_FALLBACK.get(stage, UNKNOWN_ERROR)
 
     message, retryable = MESSAGES.get(code, MESSAGES[UNKNOWN_ERROR])
     detail = validation_message or technical
@@ -212,6 +213,46 @@ def _from_text(text: str) -> str | None:
     return None
 
 
+#: Anything that looks like a filesystem path, quoted or bare.
+_PATH_LIKE = re.compile(
+    # The comments deliberately avoid writing a literal drive letter after a
+    # quote: `test_no_unguarded_hard_coded_drive_letters` scans for exactly that
+    # shape, and it should keep failing on a real hard-coded path rather than
+    # learning to ignore this file.
+    r"'[^']*[/\\][^']*'"            # single-quoted, any separator
+    r'|"[^"]*[/\\][^"]*"'           # double-quoted, any separator
+    r"|\b[A-Za-z]:\\[^\s,;)]*"      # bare Windows path, drive letter onwards
+    r"|(?<![\w'\"])/[^\s,;)]{3,}",  # bare POSIX path
+)
+
+
+def strip_paths(text: str) -> str:
+    """Remove filenames and paths before classifying.
+
+    A path in an error message is noise, and worse than noise: it is *matched*.
+    PyMuPDF reports "Failed to open file '<drive>:\\deeds\\truncated.pdf' as
+    type pdf",
+    and the word "truncated" in the operator's own filename made that classify as
+    an incomplete copy rather than an unreadable one - a wrong diagnosis produced
+    by what someone happened to name their file. The same trap catches "copy",
+    "draft", "corrupt" and "timeout", all plausible in a deed filename.
+
+    Classification should depend on what the library said, not on the file it
+    said it about. The path is preserved separately for the technical detail.
+    """
+    return _PATH_LIKE.sub("<file>", text or "").strip()
+
+
+def sanitise(text: str) -> str:
+    """Public name for `_sanitise`.
+
+    The watermark page needs the same trimming for library error text that this
+    module already applies to stored failures, and reaching into a private
+    helper from another module is how two copies of one rule start.
+    """
+    return _sanitise(text)
+
+
 def _sanitise(text: str) -> str:
     """Trim the technical detail to something safe to show on request.
 
@@ -234,7 +275,8 @@ def classify_text(technical: str, validation_status: str | None = None
     possibly a PDF verdict at the moment it gives up, and needs a code to store
     before any document row has been re-read.
     """
-    code = _from_validation(validation_status) or _from_text(technical or "")
+    code = _from_validation(validation_status) or _from_text(
+        strip_paths(technical or ""))
     if code is None:
         code = UNKNOWN_ERROR
     message, retryable = MESSAGES.get(code, MESSAGES[UNKNOWN_ERROR])

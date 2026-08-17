@@ -14,6 +14,7 @@ import html
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import urllib.error
@@ -234,6 +235,10 @@ class AppService:
         #: can show each file's destination and "Open Output Folder" can open
         #: the folder actually used rather than a guess.
         self._watermark_outputs: dict[str, Path] = {}
+        #: Source path -> the copy filed under `Failed`.
+        self._watermark_failures: dict[str, Path] = {}
+        #: Reason shown -> the library text behind it, for the disclosure.
+        self._watermark_technical: dict[str, str] = {}
 
         # OCR tool page state, held the same way and for the same reason.
         #
@@ -1411,6 +1416,7 @@ class AppService:
             self._watermark_scans.clear()
             self._watermark_removals.clear()
             self._watermark_outputs.clear()
+            self._watermark_failures.clear()
             return {"total": 0}
 
         if action == "scan":
@@ -1425,66 +1431,212 @@ class AppService:
             return {"scanned": scanned}
 
         if action == "remove":
-            removed = failed = 0
-            self._watermark_outputs.clear()
-            for path in self.watermark_files.paths:
-                result = self._watermark_scans.get(str(path))
-                if result is None or not result.confirmed:
-                    continue
-                try:
-                    target = self._cleaned_target(path)
-                except _AlreadyInOutputFolder as exc:
-                    self._watermark_removals[str(path)] = wm.RemovalResult(
-                        path, None, error=str(exc))
-                    failed += 1
-                    continue
-                except OSError as exc:
-                    # Creating the output folder is the first thing that can
-                    # fail, and it fails for reasons the operator can act on -
-                    # a read-only drive, a network share that has gone away.
-                    # Reported per file rather than aborting the batch, because
-                    # a selection can span several folders and only one of them
-                    # may be the problem.
-                    self._watermark_removals[str(path)] = wm.RemovalResult(
-                        path, None,
-                        error=self._filesystem_reason(exc, path.parent))
-                    failed += 1
-                    continue
-                try:
-                    # allow_lossy stays False. A raster watermark is burned into
-                    # the scan, so the pixels beneath were never captured -
-                    # "removing" it means inventing content on a legal document.
-                    outcome = wm.remove(path, target, scan_result=result,
-                                        allow_lossy=False)
-                    self._watermark_removals[str(path)] = outcome
-                    if outcome.ok:
-                        removed += 1
-                        self._watermark_outputs[str(path)] = target
-                    else:
-                        failed += 1
-                except OSError as exc:
-                    # Disk full, target locked by a viewer, permission revoked
-                    # mid-run. `wm.remove` catches most of these itself, but not
-                    # every path through PyMuPDF's save raises inside it.
-                    self._watermark_removals[str(path)] = wm.RemovalResult(
-                        path, None, error=self._filesystem_reason(exc, target))
-                    failed += 1
-                except Exception as exc:  # noqa: BLE001
-                    self._record_error("watermark removal", exc)
-                    self._watermark_removals[str(path)] = wm.RemovalResult(
-                        path, None, error=f"{type(exc).__name__}: {exc}")
-                    failed += 1
-            folders = sorted({str(p.parent) for p in self._watermark_outputs.values()})
-            return {"removed": removed, "failed": failed,
-                    "output_dir": folders[0] if folders else "",
-                    "output_dirs": folders}
+            return self._remove_watermarks()
 
         if action == "open":
             target = self._watermark_output_dir()
             target.mkdir(parents=True, exist_ok=True)
             return {"path": str(target)}
 
+        if action == "open_failed":
+            for candidate in self._watermark_failures.values():
+                if candidate.parent.is_dir():
+                    return {"path": str(candidate.parent)}
+            for path in self.watermark_files.paths:
+                folder = self._failed_dir(path)
+                if folder.is_dir():
+                    return {"path": str(folder)}
+            raise RepositoryError("No deed has failed, so there is no "
+                                  f"{self.FAILED_SUBFOLDER!r} folder to open.")
+
         raise ValueError(f"unknown watermark action {action!r}")
+
+    def _remove_watermarks(self) -> dict[str, Any]:
+        """Clean every selected deed, sorting the results into two folders.
+
+        Every input ends in exactly one place: a cleaned copy in
+        `Cleaned Watermark`, or a copy of the untouched original in `Failed`
+        beside a note saying why. That completeness is the point - an operator
+        looking at a folder of 200 deeds should be able to account for all 200
+        without cross-referencing a screen that closes with the application.
+
+        "Failed" here includes a deed with no watermark to remove. It is not
+        broken, but it produced no cleaned copy, and belonging to neither folder
+        is what made the previous behaviour impossible to audit. The recorded
+        reason says exactly that, so it is not mistaken for damage.
+        """
+        cleaned = failed = 0
+        self._watermark_outputs.clear()
+        self._watermark_failures.clear()
+
+        for path in self.watermark_files.paths:
+            outcome = self._clean_one(path)
+            self._watermark_removals[str(path)] = outcome
+            if outcome.ok and outcome.output is not None:
+                cleaned += 1
+                self._watermark_outputs[str(path)] = outcome.output
+            else:
+                failed += 1
+                self._quarantine(path, outcome.error or "unknown failure")
+
+        self._write_failure_notes()
+        clean_dirs = sorted({str(p.parent) for p in self._watermark_outputs.values()})
+        fail_dirs = sorted({str(p.parent) for p in self._watermark_failures.values()})
+        log.info("watermark run: %d cleaned, %d failed", cleaned, failed,
+                 extra={"cleaned": cleaned, "failed": failed})
+        return {"removed": cleaned, "failed": failed,
+                "output_dir": clean_dirs[0] if clean_dirs else "",
+                "output_dirs": clean_dirs,
+                "failed_dir": fail_dirs[0] if fail_dirs else "",
+                "failed_dirs": fail_dirs}
+
+    def _clean_one(self, path: Path) -> Any:
+        """One deed, start to finish. Never raises; always explains itself."""
+        from core import watermark as wm
+
+        scan = self._watermark_scans.get(str(path))
+        if scan is None:
+            return wm.RemovalResult(
+                path, None,
+                error="This file was not scanned. Press Detect Watermarks "
+                      "before removing.")
+        if scan.error:
+            # The scanner could not read it at all - corrupt, encrypted, or
+            # unreadable. Its text is PyMuPDF's, so it arrives as
+            # "FileDataError: Failed to open file '<drive>:\\Users\\...' as pdf"
+            # - an exception class and an absolute path, which is neither a
+            # reason nor something an operator can act on. Classified into the
+            # same wording the pipeline and the Failed OCR page use for the same
+            # condition, so one problem has one description everywhere.
+            return wm.RemovalResult(path, None,
+                                    error=self._readable_reason(scan.error))
+        if not scan.confirmed:
+            return wm.RemovalResult(
+                path, None,
+                error="No watermark was detected in this document, so there "
+                      "was nothing to remove.")
+
+        try:
+            target = self._cleaned_target(path)
+        except _AlreadyInOutputFolder as exc:
+            return wm.RemovalResult(path, None, error=str(exc))
+        except OSError as exc:
+            # Creating the output folder is the first thing that can fail, and
+            # it fails for reasons the operator can act on - a read-only drive,
+            # a network share that has gone away. Reported per file rather than
+            # aborting the batch, because a selection can span several folders
+            # and only one of them may be the problem.
+            return wm.RemovalResult(
+                path, None, error=self._filesystem_reason(exc, path.parent))
+
+        try:
+            # allow_lossy stays False. A raster watermark is burned into the
+            # scan, so the pixels beneath were never captured - "removing" it
+            # means inventing content on a legal document.
+            return wm.remove(path, target, scan_result=scan, allow_lossy=False)
+        except OSError as exc:
+            # Disk full, target locked by a viewer, permission revoked mid-run.
+            # `wm.remove` catches most of these itself, but not every path
+            # through PyMuPDF's save raises inside it.
+            return wm.RemovalResult(
+                path, None, error=self._filesystem_reason(exc, target))
+        except Exception as exc:  # noqa: BLE001
+            self._record_error("watermark removal", exc)
+            return wm.RemovalResult(
+                path, None,
+                error=self._readable_reason(f"{type(exc).__name__}: {exc}"))
+
+    def _readable_reason(self, raw: str) -> str:
+        """Turn a library's error text into a reason, keeping the original.
+
+        `failure_codes.classify_text` already maps `FileDataError` to "PDF file
+        is corrupted or cannot be read" and `encrypted` to "PDF is password
+        protected" - the mapping this project uses everywhere else. Reusing it
+        means a deed that fails here and the same deed failing in the pipeline
+        are described identically, and no screen shows a Python exception type.
+
+        The raw text is not discarded: it is kept in `_watermark_technical` so
+        the page can offer it behind a disclosure, which is where a stack-adjacent
+        detail belongs.
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return "Watermark removal failed for an unrecognised reason."
+        code, message, _retryable = failure_codes.classify_text(raw)
+        if code == failure_codes.UNKNOWN_ERROR:
+            # Nothing recognised it. The original is better than a shrug, but
+            # it is still sanitised - no traceback, bounded length.
+            return failure_codes.sanitise(raw) or message
+        self._watermark_technical[message] = failure_codes.sanitise(raw)
+        return message
+
+    def _quarantine(self, source: Path, reason: str) -> None:
+        """Put a copy of a failed deed in `Failed`, under its own name.
+
+        **Copied, not moved.** The specification allows either, and moving would
+        take the deed out of the folder the operator is working through - on
+        legal documents that is a change to their filing, made by a tool they
+        asked only to clean a copy. A stray copy is recoverable from; a move
+        that turns out to be wrong is not.
+        """
+        try:
+            folder = self._failed_dir(source)
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / source.name
+            shutil.copy2(source, target)
+            self._watermark_failures[str(source)] = target
+        except OSError as exc:
+            # The deed already failed. Failing to file it must not cost the
+            # reason for the first failure, which is the part that matters.
+            log.warning("could not copy %s into the failed folder: %s",
+                        source.name, exc,
+                        extra={"file": source.name, "reason": reason[:120]})
+
+    def _write_failure_notes(self) -> None:
+        """Leave the reasons in the `Failed` folder, not only on screen.
+
+        A screen closes with the application. Someone handed a folder of
+        failures a week later needs to know why each one is there, and the
+        answer belongs beside them.
+        """
+        by_folder: dict[Path, list[tuple[str, str]]] = {}
+        for source, target in self._watermark_failures.items():
+            result = self._watermark_removals.get(source)
+            reason = (getattr(result, "error", "") or "").strip() or "unknown failure"
+            by_folder.setdefault(target.parent, []).append((target.name, reason))
+
+        for folder, rows in by_folder.items():
+            width = max(len(name) for name, _ in rows)
+            lines = [
+                "Watermark removal - deeds that were not cleaned",
+                f"Written {datetime.now().strftime('%d-%m-%Y %H:%M')}",
+                "",
+                "These are copies. The originals are untouched in the folder above.",
+                "",
+            ]
+            lines += [f"{name.ljust(width)}  {reason}" for name, reason in sorted(rows)]
+            try:
+                (folder / self.FAILURE_NOTE).write_text(
+                    "\n".join(lines) + "\n", encoding="utf-8")
+            except OSError as exc:
+                log.warning("could not write the failure note in %s: %s",
+                            folder, exc)
+
+    #: Where a deed that could not be cleaned is filed - beside `Cleaned
+    #: Watermark` and for the same reason: the results belong with the deeds.
+    FAILED_SUBFOLDER = "Failed"
+
+    #: Written into `Failed` so the reasons outlive the session.
+    FAILURE_NOTE = "why-these-failed.txt"
+
+    def _failed_dir(self, source: Path) -> Path:
+        """The `Failed` folder for a deed. Creates nothing."""
+        parent = source.parent
+        # A deed selected from inside one of our own output folders is filed
+        # beside that folder rather than nested inside it.
+        if parent.name in (self.CLEANED_SUBFOLDER, self.FAILED_SUBFOLDER):
+            parent = parent.parent
+        return parent / self.FAILED_SUBFOLDER
 
     #: Where cleaned copies go, relative to the folder the deeds came from.
     CLEANED_SUBFOLDER = "Cleaned Watermark"
@@ -2408,7 +2560,8 @@ class AppService:
                                    "done": False, "result": "", "result_class": "",
                                    # Where this file's clean copy went, and why
                                    # it did not go anywhere if it failed.
-                                   "output": "", "reason": ""}
+                                   "output": "", "reason": "",
+                                   "technical": ""}
 
             if scan is not None:
                 row["pages"] = scan.page_count
@@ -2433,7 +2586,8 @@ class AppService:
 
             if removal is not None:
                 row["done"] = True
-                out = self._watermark_outputs.get(key)
+                out = self._watermark_outputs.get(key) \
+                    or self._watermark_failures.get(key)
                 if out is not None:
                     row["output"] = str(out)
                 if removal.error:
@@ -2442,6 +2596,8 @@ class AppService:
                     # The existing reason display, unchanged in kind: whatever
                     # the remover said, in full, rather than a bare "failed".
                     row["reason"] = removal.error
+                    row["technical"] = self._watermark_technical.get(
+                        removal.error, "")
                 elif removal.fidelity is Fidelity.LOSSLESS and removal.removed:
                     row["result"] = "lossless"
                     row["result_class"] = "ok"
@@ -2464,18 +2620,32 @@ class AppService:
         # selection can span several.
         destinations = sorted({
             str(self._destination_for(path)) for path in self.watermark_files.paths})
+        failed_dirs = sorted({
+            str(self._failed_dir(path)) for path in self.watermark_files.paths})
+        # The folder the deeds came from, named explicitly. An operator who
+        # picked files through a dialog cannot otherwise tell from this screen
+        # which folder the app considers "the input".
+        inputs = sorted({str(path.parent) for path in self.watermark_files.paths})
         return {
             "has_files": bool(files),
             "can_remove": removable > 0,
             "output_dir": destinations[0] if destinations else "",
             "output_dirs": [{"path": d} for d in destinations],
             "many_outputs": len(destinations) > 1,
+            "failed_dir": failed_dirs[0] if failed_dirs else "",
+            "failed_dirs": [{"path": d} for d in failed_dirs],
+            "input_dir": inputs[0] if inputs else "",
+            "input_dirs": [{"path": d} for d in inputs],
+            "many_inputs": len(inputs) > 1,
             "subfolder": self.CLEANED_SUBFOLDER,
+            "failed_subfolder": self.FAILED_SUBFOLDER,
             # Only a real destination counts. Including the legacy shared
             # folder here left the button enabled on a fresh session and opened
             # a directory of pre-rename `_clean` copies.
             "has_output": any(Path(d).is_dir() and any(Path(d).glob("*.pdf"))
                               for d in destinations),
+            "has_failed_output": any(Path(d).is_dir() and any(Path(d).glob("*.pdf"))
+                                     for d in failed_dirs),
             # Scanning and removal are synchronous, so a render never catches
             # them mid-flight. The block stays because the template models it.
             "running": False,

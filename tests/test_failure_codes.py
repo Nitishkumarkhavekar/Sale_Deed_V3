@@ -132,3 +132,48 @@ class TestSuccessIsNotMisreported:
         """The PDF validator already decided; the classifier must not overrule."""
         out = fc.classify(_Doc("OCR failed", stage="ocr", retryable=False))
         assert out["retryable"] is False
+
+
+class TestAFilenameCannotDecideTheReason:
+    """Paths are stripped before classification.
+
+    PyMuPDF names the file it failed on, so the error text carries the operator's
+    own filename - and the patterns matched it. A deed the operator had called
+    `truncated.pdf` was reported as an incomplete copy when it was actually
+    unreadable: a wrong diagnosis, with a wrong remedy, produced entirely by
+    what someone named their file. "copy", "draft", "corrupt", "timeout" and
+    "watermark" are all plausible in a deed filename.
+    """
+
+    @pytest.mark.parametrize("name,expected", [
+        ("truncated.pdf", fc.PDF_CORRUPTED),
+        ("draft-copy.pdf", fc.PDF_CORRUPTED),
+        ("timeout-notes.pdf", fc.PDF_CORRUPTED),
+        ("watermarked-deed.pdf", fc.PDF_CORRUPTED),
+        ("RMN-1-00155-2024-25.pdf", fc.PDF_CORRUPTED),
+    ])
+    def test_the_filename_does_not_change_the_diagnosis(self, name, expected):
+        raw = (f"FileDataError: Failed to open file "
+               f"'C:{chr(92)}Users{chr(92)}vinay{chr(92)}deeds{chr(92)}{name}' "
+               f"as type pdf.")
+        code, message, _ = fc.classify_text(raw)
+        assert code == expected, f"{name} -> {code} ({message})"
+
+    def test_the_error_text_still_decides(self):
+        """Stripping must not blind the classifier to the actual message."""
+        code, _, _ = fc.classify_text(
+            "PDF is incomplete or truncated - the copy did not finish")
+        assert code == fc.PDF_INCOMPLETE
+
+    @pytest.mark.parametrize("raw", [
+        "failed on 'C:" + chr(92) + "deeds" + chr(92) + "a.pdf'",
+        'failed on "D:/deeds/a.pdf"',
+        "failed on C:" + chr(92) + "deeds" + chr(92) + "a.pdf",
+        "failed on /home/user/deeds/a.pdf",
+    ])
+    def test_every_path_shape_is_removed(self, raw):
+        assert "a.pdf" not in fc.strip_paths(raw), raw
+
+    def test_ordinary_text_survives_stripping(self):
+        text = "OCR found only 12 characters across 20 pages"
+        assert fc.strip_paths(text) == text

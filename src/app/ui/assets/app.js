@@ -521,7 +521,7 @@
       // is a different and destructive-feeling surprise.
       if (t.id === "btn-wm-browse" || t.id === "btn-wm-scan" ||
           t.id === "btn-wm-remove" || t.id === "btn-wm-open" ||
-          t.id === "btn-wm-clear") {
+          t.id === "btn-wm-open_failed" || t.id === "btn-wm-clear") {
         const action = t.id.slice("btn-wm-".length);
         busy(t, true);
         call("watermark", { action: action })
@@ -540,18 +540,22 @@
                 if (r.output_dirs && r.output_dirs.length > 1) {
                   msg += " and " + (r.output_dirs.length - 1) + " other folder(s)";
                 }
-                if (r.failed) msg += " &middot; " + r.failed + " failed";
+                if (r.failed) {
+                  msg += " &middot; " + r.failed + " copied to <code>"
+                       + r.failed_dir + "</code>";
+                }
               } else {
                 msg = r.failed
-                  ? r.failed + " file(s) could not be cleaned - see the table."
-                  : "No removable watermarks were found.";
+                  ? r.failed + " file(s) were not cleaned - copies are in <code>"
+                    + r.failed_dir + "</code> with the reason for each."
+                  : "Nothing to do - no files were selected.";
               }
               toast(msg, r.removed ? (r.failed ? "warn" : "ok") : "warn");
-            } else if (action === "open" && r.path) {
+            } else if ((action === "open" || action === "open_failed") && r.path) {
               call("open_path", { path: r.path })
-                .catch(function () { toast("Cleaned copies are in " + r.path, "info"); });
+                .catch(function () { toast("The folder is " + r.path, "info"); });
             }
-            if (action !== "open") navigate(currentPage);
+            if (action !== "open" && action !== "open_failed") navigate(currentPage);
           })
           .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
         return;
