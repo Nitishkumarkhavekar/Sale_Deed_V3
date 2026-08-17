@@ -429,7 +429,19 @@ class _Handler(BaseHTTPRequestHandler):
                 })
             elif path == "/profile":
                 info = self.app.profile_info()
-                info["ladder"] = ladder_report(self.app.model_dir, self.app.governor.hw)
+                # The ladder is the "why not better?" explanation and it needs
+                # the checkpoint's config.json. When that is missing this
+                # endpoint used to answer 500 - the diagnostic failing at
+                # exactly the moment it is worth calling, and saying nothing
+                # about why. The profile itself is still known, so report it
+                # and name the missing piece.
+                try:
+                    info["ladder"] = ladder_report(self.app.model_dir,
+                                                   self.app.governor.hw)
+                except Exception as exc:  # noqa: BLE001 - diagnostics never 500
+                    info["ladder"] = ""
+                    info["ladder_error"] = (
+                        f"the fidelity ladder could not be computed: {exc}")
                 self._send(HTTPStatus.OK, info)
             elif path == "/jobs":
                 self._send(HTTPStatus.OK, self.app.queue.summary())
