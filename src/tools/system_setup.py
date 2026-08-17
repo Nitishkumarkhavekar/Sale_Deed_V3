@@ -524,6 +524,78 @@ def _apply_migrations(report: Report) -> None:
                         "py -3.13 -m alembic upgrade head"))
 
 
+#: The PyTorch index. vLLM pins `torch==2.11.0+cu130`, and PyPI carries plain
+#: 2.11.0 but not the CUDA-13 build - so a bare `pip install <wheel>` fails with
+#: "no matching distribution" on a wheel that is perfectly good.
+TORCH_INDEX = "https://download.pytorch.org/whl/cu130"
+
+
+def ensure_vllm(report: Report, install: bool, system: dict) -> None:
+    """vLLM, in its own environment, on hardware that can use it.
+
+    Skipped rather than installed on a small card. vLLM allocates its KV cache
+    pool up front against the *unquantised* checkpoint, so a machine that
+    cannot host it gains nothing from several GB of torch and CUDA libraries -
+    and llama.cpp already serves the quantised model there.
+
+    A separate virtualenv is not tidiness: vLLM pins `transformers>=5.5.3` and
+    Surya pins `==4.57.1`. They cannot share an interpreter, and installing
+    vLLM into Surya's would break OCR - the stage that does most of the work.
+    """
+    from ai_server.engines.vllm import VENV_DIR
+
+    started = time.monotonic()
+    vram = float(system.get("gpu_vram_gb") or 0.0)
+    env_dir = ROOT.parent / VENV_DIR if (ROOT.parent / VENV_DIR).exists() else         paths.ROOT / VENV_DIR
+    python = env_dir / "Scripts" / "python.exe"
+
+    if python.is_file():
+        code, _ = _run([str(python), "-c", "import vllm"], timeout=180)
+        if code == 0:
+            report.add(Step("vLLM engine", Status.FOUND,
+                            f"ready in {VENV_DIR}", time.monotonic() - started))
+            return
+
+    if vram < 16.0:
+        report.add(Step(
+            "vLLM engine", Status.SKIPPED,
+            f"{vram:.0f} GB VRAM - llama.cpp serves this card",
+            time.monotonic() - started))
+        return
+
+    wheels = sorted((paths.MODELS).glob("vllm-*.whl"))
+    if not wheels:
+        report.add(Step("vLLM engine", Status.MISSING, "no vllm wheel in models/",
+                        time.monotonic() - started,
+                        remedy="Optional. llama.cpp serves the quantised model."))
+        return
+
+    if not install:
+        report.add(Step("vLLM engine", Status.MISSING,
+                        f"would install {wheels[-1].name}",
+                        time.monotonic() - started))
+        return
+
+    if not python.is_file():
+        code, out = _run([sys.executable, "-m", "venv", str(env_dir)], timeout=600)
+        if code != 0:
+            report.add(Step("vLLM engine", Status.FAILED,
+                            f"could not create {VENV_DIR}: {out.strip()[:70]}",
+                            time.monotonic() - started))
+            return
+
+    code, out = _run([str(python), "-m", "pip", "install", str(wheels[-1]),
+                      "--extra-index-url", TORCH_INDEX], timeout=5400)
+    ok = code == 0
+    report.add(Step(
+        "vLLM engine", Status.INSTALLED if ok else Status.FAILED,
+        f"{wheels[-1].name} into {VENV_DIR}" if ok
+        else (out.strip().splitlines() or ["install failed"])[-1][:70],
+        time.monotonic() - started,
+        remedy="" if ok else
+        "Optional - llama.cpp still serves the quantised model."))
+
+
 def ensure_runtime(report: Report, install: bool) -> None:
     """llama.cpp, which ships the CUDA DLLs it needs.
 
@@ -858,6 +930,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_configuration(report, dsn, install, created_database)
     ensure_runtime(report, install)
     verify_extraction_model(report)
+    ensure_vllm(report, install, report.system)
     ensure_translation(report, install)
     ensure_ocr(report)
 

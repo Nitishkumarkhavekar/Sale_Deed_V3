@@ -13,6 +13,10 @@
 
 # -- 1. Weights and binaries -------------------------------------------------
 
+# vLLM's own virtualenv - several GB of torch and CUDA libraries, created by
+# the installer on hardware that can use them. Not source.
+models/vllm-env/
+
 # 37 GB: the fine-tuned checkpoints, the GGUFs, Surya, the translator, and
 # Surya's own virtualenv. Installed by System Setup.bat, never committed.
 models/

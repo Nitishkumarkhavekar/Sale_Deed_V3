@@ -14,6 +14,11 @@ REM    "System Setup.bat" --report-only  detect and report, change nothing
 REM    "System Setup.bat" --no-launch    set up but do not start
 REM    "System Setup.bat" --skip-tests   skip the test suite
 REM
+REM  Engines: llama.cpp serves the quantised model on any card and is what
+REM  runs on a laptop. On a machine with 16 GB or more of VRAM the setup also
+REM  installs vLLM - into its own virtualenv, because it pins a transformers
+REM  version Surya cannot use - and the server then selects it automatically.
+REM
 REM  This file stays a shim on purpose. All logic lives in
 REM  src/tools/system_setup.py, because batch is unreadable and untestable at
 REM  any size worth writing.

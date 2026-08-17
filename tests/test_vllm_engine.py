@@ -136,3 +136,62 @@ class TestItIsSelectable:
         requests = [ExtractionRequest(ocr_text="x", prompt="p", document_id=str(n))
                     for n in range(8)]
         assert engine.generate_batch(requests) == [str(n) for n in range(8)]
+
+
+class TestEngineSelection:
+    """`--engine auto` must never choose an engine that cannot start."""
+
+    def _hw(self, vram):
+        return type("HW", (), {"primary_gpu": type("G", (), {"total_gib": vram})()})()
+
+    def test_a_small_card_gets_llamacpp(self, monkeypatch):
+        from ai_server.server import choose_engine
+
+        monkeypatch.delenv("SALEDEED_ENGINE", raising=False)
+        assert choose_engine(self._hw(4.0)) == "llamacpp"
+        assert choose_engine(self._hw(8.0)) == "llamacpp"
+        assert choose_engine(self._hw(12.0)) == "llamacpp"
+
+    def test_a_big_card_without_vllm_installed_still_gets_llamacpp(self,
+                                                                  monkeypatch):
+        """Choosing an engine that then dies during KV-cache profiling is worse
+        than never choosing it: the failure arrives minutes later."""
+        from ai_server.server import choose_engine
+
+        monkeypatch.delenv("SALEDEED_ENGINE", raising=False)
+        assert choose_engine(self._hw(24.0),
+                             vllm_python="no-such-interpreter") == "llamacpp"
+
+    def test_no_gpu_at_all_gets_llamacpp(self, monkeypatch):
+        from ai_server.server import choose_engine
+
+        monkeypatch.delenv("SALEDEED_ENGINE", raising=False)
+        assert choose_engine(None) == "llamacpp"
+
+    def test_the_operator_overrides_the_hardware(self, monkeypatch):
+        """Someone who knows their machine is never argued with."""
+        from ai_server.server import choose_engine
+
+        monkeypatch.setenv("SALEDEED_ENGINE", "vllm")
+        assert choose_engine(self._hw(4.0)) == "vllm"
+        monkeypatch.setenv("SALEDEED_ENGINE", "llamacpp")
+        assert choose_engine(self._hw(64.0)) == "llamacpp"
+
+    def test_a_nonsense_override_is_ignored(self, monkeypatch):
+        from ai_server.server import choose_engine
+
+        monkeypatch.setenv("SALEDEED_ENGINE", "banana")
+        assert choose_engine(self._hw(4.0)) == "llamacpp"
+
+    def test_the_interpreter_is_never_the_application_one(self, monkeypatch):
+        """Installing vLLM into the app's interpreter is the mistake the whole
+        arrangement exists to prevent - it would drag CUDA into the process
+        that must never link it."""
+        import sys
+
+        from ai_server.engines.vllm import resolve_vllm_python
+
+        monkeypatch.delenv("SALEDEED_VLLM_PYTHON", raising=False)
+        resolved = resolve_vllm_python(root="/nowhere-at-all")
+        assert resolved != sys.executable
+        assert resolved == ""

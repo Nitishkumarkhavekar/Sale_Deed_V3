@@ -339,3 +339,30 @@ class VllmEngine(InferenceEngine):
         with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="vllm") as pool:
             return list(pool.map(lambda r: self.generate(r, timeout_s), requests))
+
+
+#: Where the installer puts vLLM's own environment. A third interpreter is not
+#: excess: vLLM pins `transformers>=5.5.3` and Surya pins `==4.57.1`, so they
+#: cannot share one, and putting vLLM in the application's interpreter would
+#: drag CUDA into the process that must never link it.
+VENV_DIR = "models/vllm-env"
+
+
+def resolve_vllm_python(root: Path | None = None) -> str:
+    """The interpreter that should run vLLM, or "" if there is none.
+
+    Order: an explicit `SALEDEED_VLLM_PYTHON`, then the environment the
+    installer creates. Never falls back to `sys.executable` - that is the
+    application's interpreter, and installing vLLM into it is the mistake this
+    whole arrangement exists to prevent.
+    """
+    explicit = (os.environ.get("SALEDEED_VLLM_PYTHON") or "").strip()
+    if explicit and Path(explicit).is_file():
+        return explicit
+
+    base = Path(root) if root else Path(__file__).resolve().parents[3]
+    candidate = base / VENV_DIR / "Scripts" / "python.exe"
+    if candidate.is_file():
+        return str(candidate)
+    candidate = base / VENV_DIR / "bin" / "python"
+    return str(candidate) if candidate.is_file() else ""

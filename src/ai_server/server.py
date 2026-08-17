@@ -538,6 +538,46 @@ def make_http_server(app: AiServer, host: str, port: int) -> ThreadingHTTPServer
     return httpd
 
 
+#: VRAM below which vLLM cannot host the unquantised checkpoint. The weights
+#: are ~7.3 GB in bf16 and vLLM allocates its KV cache pool on top of that, up
+#: front - so a card that merely *fits* the weights still fails at startup. 16
+#: GiB is the first size with room for both plus the headroom PagedAttention
+#: wants.
+VLLM_MIN_VRAM_GIB = 16.0
+
+
+def choose_engine(hw: Any = None, *, vllm_python: str | None = None) -> str:
+    """Pick an engine from the hardware, honestly.
+
+    llama.cpp is the safe default and stays so: it runs the quantised model on
+    anything, including CPU. vLLM is selected only when the card can actually
+    hold the full checkpoint *and* vLLM is installed - both, because choosing an
+    engine that then fails at startup is worse than never choosing it, and the
+    failure arrives minutes later during KV-cache profiling rather than here.
+
+    Overridable end to end: `--engine` beats this, and `SALEDEED_ENGINE` beats
+    the default, so an operator who knows their machine is never argued with.
+    """
+    import os as _os
+
+    forced = (_os.environ.get("SALEDEED_ENGINE") or "").strip().lower()
+    if forced in ("llamacpp", "vllm", "mock"):
+        return forced
+
+    gpu = getattr(hw, "primary_gpu", None) if hw is not None else None
+    vram = float(getattr(gpu, "total_gib", 0.0) or 0.0)
+    if vram < VLLM_MIN_VRAM_GIB:
+        return "llamacpp"
+
+    from .engines.vllm import resolve_vllm_python, _probe_vllm
+
+    python = vllm_python or resolve_vllm_python()
+    if not python:
+        return "llamacpp"
+    ok, _detail = _probe_vllm(python)
+    return "vllm" if ok else "llamacpp"
+
+
 def build_default(
     model_gguf: str | Path,
     model_dir: str | Path = str(paths.CHECKPOINT_DIR.parent / "gemma4b-text"),
@@ -558,6 +598,10 @@ def build_default(
     governor = ResourceGovernor()
     profile = select_profile(model_dir, governor.hw)
 
+    if engine_name == "auto":
+        engine_name = choose_engine(governor.hw)
+        log.info("engine chosen from hardware", extra={"engine": engine_name})
+
     engine: InferenceEngine
     if engine_name == "mock":
         from .engines.mock import MockEngine
@@ -568,7 +612,10 @@ def build_default(
         # the .gguf is llama.cpp's format and vLLM cannot read it.
         from .engines.vllm import VllmEngine
 
-        engine = VllmEngine(model_dir, profile, port=port + 1)
+        from .engines.vllm import resolve_vllm_python
+
+        engine = VllmEngine(model_dir, profile, port=port + 1,
+                            python=resolve_vllm_python())
     else:
         from .engines.llamacpp import LlamaCppEngine
 
@@ -602,8 +649,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Sale Deed AI server")
     ap.add_argument("--model", default=str(paths.GGUF_DIR / "deeds-v6_7-Q4_K_M.gguf"))
     ap.add_argument("--model-dir", default=str(paths.AI_SERVER / "gemma4b-text"))
-    ap.add_argument("--engine", default="llamacpp",
-                    choices=("llamacpp", "vllm", "mock"),
+    ap.add_argument("--engine", default="auto",
+                    choices=("auto", "llamacpp", "vllm", "mock"),
                     help="llamacpp serves the quantised .gguf; vllm serves the "
                          "full checkpoint and needs a card that can hold it")
     ap.add_argument("--binary", default=str(paths.TOOLS_DIR / "llamacpp" / "llama-server.exe"))
