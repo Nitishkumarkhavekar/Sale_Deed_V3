@@ -293,6 +293,18 @@ class Bridge(QObject):
                   payload, request_id)
 
     @Slot(str, str)
+    def ocr_tool(self, request_id: str, payload: str) -> None:
+        """The OCR tool page, shaped like the `watermark` slot beside it.
+
+        `run` returns as soon as the worker thread is started rather than when
+        OCR finishes - a real deed takes minutes and the front end gives up on a
+        call after two. Progress is read back by re-rendering the page.
+        """
+        self._run("ocr_tool",
+                  lambda p: self.service.ocr_tool(str(p.get("action") or "")),
+                  payload, request_id)
+
+    @Slot(str, str)
     def batch_action(self, request_id: str, payload: str) -> None:
         """Run, stop or delete one batch.
 

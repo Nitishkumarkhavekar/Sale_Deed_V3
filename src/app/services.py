@@ -14,6 +14,7 @@ import html
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,7 +31,9 @@ from core.db.models import (
     RESUMABLE_BATCH_STATES,
     BatchState,
     DocumentState,
+    StageState,
 )
+from core import failure_codes
 from core.failure_codes import classify as _cause
 from core.failure_codes import describe as _describe
 from core.pdf_validation import CORRUPT_STATUSES
@@ -219,6 +222,20 @@ class AppService:
         self._watermark_scans: dict[str, Any] = {}
         self._watermark_removals: dict[str, Any] = {}
 
+        # OCR tool page state, held the same way and for the same reason.
+        #
+        # Unlike watermark scanning, an OCR pass is minutes per document, so it
+        # cannot run inside the bridge call - the UI would block and the
+        # front-end's 120 s call timeout would fire long before a real deed
+        # finished. It runs on a worker thread and this dictionary is what the
+        # page renders from, refreshed by the status poll already running.
+        self.ocr_files = Selection()
+        self._ocr_results: dict[str, dict[str, Any]] = {}
+        self._ocr_thread: threading.Thread | None = None
+        self._ocr_cancel = threading.Event()
+        self._ocr_detail = ""
+        self._ocr_lock = threading.Lock()
+
         self.stages = build_stages(ai_base_url=self.ai.base_url)
         self.runner = BatchRunner(self.sessions, self.stages,
                                   mode=BatchMode.MANUAL, max_workers=1)
@@ -374,6 +391,7 @@ class AppService:
             "processing": self._processing,
             "failed_ocr": self._failed_ocr_page,
             "data": self._data_view,
+            "ocr": self._ocr_page,
             "watermark": self._watermark_page,
             "settings": self._settings,
             "validation": self._validation,
@@ -435,6 +453,19 @@ class AppService:
             "gpu_util": chrome.gpu_util,
             "vram_free": chrome.vram_free,
         }
+        # The OCR tool page has no timer of its own; it refreshes off this poll.
+        # Cheap enough to include unconditionally - three integers read from a
+        # dictionary already in memory, no database and no filesystem.
+        if self.ocr_files.paths or self._ocr_busy():
+            with self._ocr_lock:
+                finished = sum(1 for r in self._ocr_results.values()
+                               if r.get("state") == "done")
+            payload["ocr_tool"] = {
+                "running": self._ocr_busy(),
+                "processed": finished,
+                "total": len(self.ocr_files.paths),
+                "detail": self._ocr_detail,
+            }
         if not self.db_ok:
             return payload
 
@@ -1406,6 +1437,260 @@ class AppService:
 
         raise ValueError(f"unknown watermark action {action!r}")
 
+    # -- OCR tool ----------------------------------------------------------
+    #
+    # A standalone page over the *same* `OcrStage` the pipeline uses -
+    # `self.stages.ocr`, the configured instance, not a second one. Engine
+    # choice, Surya interpreter, DPI, language list, timeout and the GPU lease
+    # are therefore whatever the batch pipeline is using at that moment, and
+    # there is no second implementation to keep in step.
+    #
+    # It exists because the pipeline's OCR is only reachable by committing a
+    # batch. An operator who wants to know whether a scan is legible at all, or
+    # to OCR a handful of files and feed the text straight to extraction, had no
+    # way to do either.
+
+    def ocr_tool(self, action: str) -> dict[str, Any]:
+        """Single entry point for the OCR page, mirroring `watermark`."""
+        if action == "browse":
+            picker = getattr(self, "file_picker", None)
+            if picker is None:
+                raise RuntimeError("no file picker is attached")
+            added = self.ocr_files.add([Path(p) for p in picker()])
+            return {"added": added, "total": len(self.ocr_files.paths)}
+
+        if action == "add":
+            return {"total": len(self.ocr_files.paths)}
+
+        if action == "clear":
+            if self._ocr_busy():
+                raise RepositoryError(
+                    "OCR is still running. Stop it before clearing the list.")
+            self.ocr_files = Selection()
+            with self._ocr_lock:
+                self._ocr_results.clear()
+            self._ocr_detail = ""
+            return {"total": 0}
+
+        if action == "run":
+            return self._start_ocr_run()
+
+        if action == "stop":
+            # Cancels between documents, never inside one: the page in flight
+            # finishes so its text is not thrown away, exactly as a batch stop
+            # behaves.
+            self._ocr_cancel.set()
+            self._ocr_detail = "stopping after the current file"
+            return {"stopping": True}
+
+        if action == "open":
+            paths.OCR_TEXT_DIR.mkdir(parents=True, exist_ok=True)
+            return {"path": str(paths.OCR_TEXT_DIR)}
+
+        if action == "queue":
+            return self._queue_ocr_results()
+
+        raise ValueError(f"unknown OCR action {action!r}")
+
+    def _ocr_busy(self) -> bool:
+        thread = self._ocr_thread
+        return thread is not None and thread.is_alive()
+
+    def _start_ocr_run(self) -> dict[str, Any]:
+        if self._ocr_busy():
+            raise RepositoryError("OCR is already running.")
+        if not self.ocr_files.paths:
+            raise RepositoryError("Choose some PDFs first.")
+
+        ok, detail = self.stages.ocr.available()
+        if not ok:
+            # An unavailable engine is an environment problem, and saying so
+            # here is far better than starting a run that fails identically on
+            # every file.
+            raise RepositoryError(f"OCR engine unavailable: {detail}")
+
+        self._ocr_cancel.clear()
+        with self._ocr_lock:
+            self._ocr_results.clear()
+        self._ocr_detail = "starting"
+        self._ocr_thread = threading.Thread(
+            target=self._ocr_worker, name="ocr-tool", daemon=True)
+        self._ocr_thread.start()
+        return {"started": len(self.ocr_files.paths), "engine": self.stages.ocr.engine}
+
+    def _ocr_worker(self) -> None:
+        """Run OCR over the selection, one file at a time.
+
+        One at a time and under the pipeline's own GPU lease. Surya and the
+        language model cannot both be resident on a 4 GB card, and this page can
+        be used while a batch is running - without the lease the two would race
+        for VRAM and whichever lost would OOM mid-document.
+        """
+        paths.OCR_TEXT_DIR.mkdir(parents=True, exist_ok=True)
+        stage = self.stages.ocr
+        targets = list(self.ocr_files.paths)
+
+        for index, path in enumerate(targets, 1):
+            if self._ocr_cancel.is_set():
+                self._ocr_detail = f"stopped after {index - 1} of {len(targets)}"
+                break
+            self._ocr_detail = f"reading {path.name} ({index} of {len(targets)})"
+            self._record_ocr(path, {"state": "running"})
+            started = time.monotonic()
+            try:
+                with self.runner.gpu_lease(stage, "ocr-tool"):
+                    outcome = stage.run(path)
+            except Exception as exc:  # noqa: BLE001 - one bad file must not end
+                # the run; the rest of the selection is still worth doing.
+                self._record_error("ocr tool", exc)
+                self._record_ocr(path, self._ocr_failure(path, str(exc), None))
+                continue
+
+            elapsed = time.monotonic() - started
+            if not outcome.ok:
+                self._record_ocr(path, self._ocr_failure(
+                    path, outcome.detail, outcome, elapsed))
+                continue
+
+            pages = outcome.data.get("page_texts") or []
+            text = "\n\n".join(t for _, t in pages).strip()
+            if not text:
+                # Succeeded mechanically and produced nothing. Reported as the
+                # distinct condition it is: a scan needing a real OCR pass, not
+                # a broken file.
+                self._record_ocr(path, self._ocr_failure(
+                    path, "OCR produced no text", outcome, elapsed,
+                    code=failure_codes.OCR_NO_TEXT))
+                continue
+
+            out_file = paths.OCR_TEXT_DIR / f"{path.stem}.txt"
+            try:
+                out_file.write_text(text, encoding="utf-8")
+            except OSError as exc:
+                self._record_ocr(path, self._ocr_failure(
+                    path, f"could not write {out_file.name}: {exc}", outcome,
+                    elapsed, code=failure_codes.FILE_ACCESS_ERROR))
+                continue
+
+            self._record_ocr(path, {
+                "state": "done", "ok": True,
+                "pages": outcome.data.get("pages") or len(pages),
+                "chars": len(text), "seconds": round(elapsed, 1),
+                "text_path": str(out_file),
+                "page_texts": pages,
+            })
+            log.info("ocr tool: %s -> %d chars in %.1fs", path.name, len(text),
+                     elapsed, extra={"file": path.name, "chars": len(text)})
+
+        else:
+            self._ocr_detail = f"finished {len(targets)} file(s)"
+        if self._ocr_cancel.is_set():
+            self._ocr_cancel.clear()
+
+    def _ocr_failure(self, path: Path, detail: str, outcome: Any,
+                     seconds: float = 0.0, code: str | None = None
+                     ) -> dict[str, Any]:
+        """Turn a failure into the same structured reason the pipeline records.
+
+        `failure_codes.classify` and `pdf_validation` are reused rather than
+        re-deriving a message here, so a file that fails on this page and the
+        same file failing inside a batch give the operator identical wording.
+        """
+        from core.pdf_validation import validate_pdf
+
+        # The file itself is examined only now, when OCR has already failed -
+        # the same order the pipeline uses, and for the same reason: "is the
+        # file broken?" is worth a few KB of reads once something has gone
+        # wrong, and the answer is better than whatever OCR said on its way out.
+        validation_status = None
+        if code is None:
+            try:
+                verdict = validate_pdf(path)
+            except Exception:  # noqa: BLE001 - diagnosis must never raise
+                verdict = None
+            if verdict is not None and verdict.is_corrupt:
+                detail = verdict.error_message or detail
+                validation_status = getattr(verdict.status, "value", None)
+
+        if code is None:
+            code, message, retryable = failure_codes.classify_text(
+                detail, validation_status)
+        else:
+            message, retryable = failure_codes.MESSAGES.get(
+                code, failure_codes.MESSAGES[failure_codes.UNKNOWN_ERROR])
+
+        log.warning("ocr tool failed: %s - %s", path.name, message,
+                    extra={"file": path.name, "code": code})
+        return {"state": "done", "ok": False, "seconds": round(seconds, 1),
+                "code": code, "message": message,
+                "stage": failure_codes.STAGES.get(code, "OCR"),
+                "retryable": retryable,
+                "detail": detail,
+                "pages": (outcome.data.get("pages") if outcome is not None
+                          and getattr(outcome, "data", None) else 0) or 0}
+
+    def _record_ocr(self, path: Path, row: dict[str, Any]) -> None:
+        with self._ocr_lock:
+            self._ocr_results[str(path)] = row
+
+    def _queue_ocr_results(self) -> dict[str, Any]:
+        """Hand successful OCR results to the deed pipeline.
+
+        This is the integration that makes the page more than a viewer. A batch
+        is created from the files that produced text, their pages are written
+        straight into `ocr_pages`, and the OCR stage is marked DONE - so the
+        pipeline starts these documents at *extraction* rather than paying for
+        an OCR pass that has already been done. The runner's `_claim_downstream`
+        is written for exactly this case ("OCR ran in an earlier run"), so no
+        pipeline change is needed to accept them.
+        """
+        if not self.db_ok:
+            raise RuntimeError(self.db_detail.splitlines()[0])
+        if self._ocr_busy():
+            raise RepositoryError("Wait for the OCR run to finish first.")
+
+        with self._ocr_lock:
+            ready = [(Path(key), row) for key, row in self._ocr_results.items()
+                     if row.get("ok") and row.get("page_texts")]
+        if not ready:
+            raise RepositoryError(
+                "No file has produced OCR text yet. Run OCR first.")
+
+        name = f"OCR {datetime.now().strftime('%d-%m-%Y %H:%M')}"
+        with session_scope(self.sessions) as session:
+            uow = UnitOfWork(session)
+            user = uow.users.get_or_create("ocr_tool")
+            batch = uow.batches.create(
+                name, user, len(ready),
+                sum(p.stat().st_size for p, _ in ready if p.is_file()))
+            docs = uow.documents.add_many(batch, [
+                {"document_id": p.stem, "source_filename": p.name,
+                 "source_path": str(p),
+                 "size_bytes": p.stat().st_size if p.is_file() else 0}
+                for p, _ in ready])
+            by_stem = {p.stem: row for p, row in ready}
+            seeded = 0
+            for doc in docs:
+                row = by_stem.get(doc.document_id)
+                if row is None:
+                    continue
+                uow.ocr.save_pages(doc, row["page_texts"])
+                doc.page_count = row.get("pages") or doc.page_count
+                # DONE, not PENDING: the text is already in the table, and
+                # leaving it claimable would re-run minutes of GPU work over a
+                # document that is finished with that stage.
+                uow.documents.mark_stage(doc, "ocr", StageState.DONE)
+                seeded += 1
+            batch_id, batch_name = batch.id, batch.name
+
+        log.info("ocr tool queued batch %s with %d pre-OCR'd document(s)",
+                 batch_name, seeded,
+                 extra={"batch": batch_id, "documents": seeded})
+        return {"batch_id": batch_id, "name": batch_name, "documents": seeded,
+                "detail": (f"Queued {seeded} document(s) as {batch_name!r}. "
+                           "They start at extraction - the OCR text is already "
+                           "stored.")}
+
     # -- page models -------------------------------------------------------
 
     def _machine(self) -> dict[str, Any]:
@@ -1613,7 +1898,63 @@ class AppService:
                 "in_queue": max(0, remaining),
             }
             model["failed_ocr_count"] = uow.documents.failed_ocr_count()
+            model.update(self._failure_panel(uow, active.id))
         return model
+
+    #: How many failures the Processing page lists inline. A thousand-file batch
+    #: can fail in bulk, and a page that renders every one of them stops being
+    #: readable; the Failed OCR page is the place for the full list.
+    PROCESSING_FAILURE_LIMIT = 25
+
+    def _failure_panel(self, uow: UnitOfWork, batch_id: int) -> dict[str, Any]:
+        """Why each document in this batch failed, in words.
+
+        The Processing page showed a "Failed: 9" tile and nothing else - an
+        operator could see *that* nine documents had failed and had to open
+        another page, per document, to learn why. Worse, "failed" covers a
+        corrupt file, an unreachable AI server and a database error, and those
+        call for completely different responses.
+
+        `failure_codes.classify` does the work, reading only what is already
+        stored - so this needs no new column, no reprocessing, and explains
+        documents that failed before any of this existed.
+        """
+        docs = uow.documents.failed_for_batch(batch_id)
+        rows: list[dict[str, Any]] = []
+        for doc in docs[:self.PROCESSING_FAILURE_LIMIT]:
+            cause = _cause(doc) or {}
+            rows.append({
+                "document_pk": doc.id,
+                "document_id": doc.document_id,
+                "source_filename": doc.source_filename,
+                # Never a bare "Failed": the classifier always yields a sentence,
+                # falling back to "Processing failed for an unrecognised reason"
+                # only when there genuinely is nothing recorded.
+                "reason": cause.get("reason") or "No reason was recorded.",
+                "code": cause.get("code") or "",
+                "stage": cause.get("stage") or "Processing",
+                # The raw text behind the sentence, for someone who wants it.
+                "technical": cause.get("technical") or "",
+                "retryable": cause.get("retryable", True),
+                # An individual rerun goes through `requeue_ocr`, which by
+                # design only touches documents whose *OCR* stage failed - it
+                # ignores the rest rather than restarting healthy work. Offering
+                # the button for an extraction or translation failure would
+                # therefore produce a button that reports "0 queued" every time.
+                # Those are handled by the batch-level Reprocess Failed, which
+                # the card footer points at.
+                "can_rerun": (cause.get("retryable", True)
+                              and cause.get("failed_stage") == "ocr"),
+                "failed_stage": cause.get("failed_stage") or "unknown",
+                "attempts": doc.ocr_attempts,
+            })
+        return {
+            "failures": rows,
+            "has_failures": bool(rows),
+            "failure_total": len(docs),
+            "failures_truncated": len(docs) > len(rows),
+            "failures_hidden": max(0, len(docs) - len(rows)),
+        }
 
     def _data_view(self, params: dict[str, Any]) -> dict[str, Any]:
         page = int(params.get("page") or 1)
@@ -1844,6 +2185,71 @@ class AppService:
                 "The loaded weights do not support the split-prompt retry path, and a "
                 "same-prompt rerun at temperature 0 is byte-identical. Documents that "
                 "fail validation are routed to review instead of retried."),
+        }
+
+    def _ocr_page(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """OCR tool page model, shaped like the Watermark Remover's.
+
+        Deliberately the same structure - dropzone, selected-file table,
+        progress row, button row - so the two tool pages read as one feature
+        family rather than two people's ideas of a tool page.
+        """
+        running = self._ocr_busy()
+        with self._ocr_lock:
+            results = dict(self._ocr_results)
+
+        files: list[dict[str, Any]] = []
+        succeeded = failed = 0
+        for path in self.ocr_files.paths:
+            row = results.get(str(path)) or {}
+            state = row.get("state") or "pending"
+            item: dict[str, Any] = {
+                "name": path.name, "pages": row.get("pages") or "",
+                "chars": f"{row['chars']:,}" if row.get("chars") else "",
+                "seconds": f"{row['seconds']}s" if row.get("seconds") else "",
+                "done": state == "done", "running": state == "running",
+                "ok": bool(row.get("ok")),
+                # The reason, not just "failed". Same wording the pipeline uses
+                # for the same condition, because it is the same classifier.
+                "reason": row.get("message") or "",
+                "code": row.get("code") or "",
+                "result": "", "result_class": "",
+            }
+            if state == "done":
+                if row.get("ok"):
+                    item["result"] = "text extracted"
+                    item["result_class"] = "ok"
+                    succeeded += 1
+                else:
+                    item["result"] = "failed"
+                    item["result_class"] = "danger"
+                    failed += 1
+            files.append(item)
+
+        total = len(self.ocr_files.paths)
+        processed = succeeded + failed
+        engine_ok, engine_detail = self.stages.ocr.available()
+        return {
+            "has_files": bool(files),
+            "files": files,
+            "engine": self.stages.ocr.engine,
+            "engine_detail": engine_detail,
+            "engine_ok": engine_ok,
+            "engine_bad": not engine_ok,
+            "languages": ", ".join(self.stages.ocr.languages),
+            "running": running,
+            "can_run": bool(files) and not running and engine_ok,
+            "can_queue": succeeded > 0 and not running,
+            "detail": self._ocr_detail,
+            "total": total,
+            "processed": processed,
+            "succeeded": succeeded,
+            "failed": failed,
+            "pending": max(0, total - processed),
+            "percent": int(processed / total * 100) if total else 0,
+            "has_output": (paths.OCR_TEXT_DIR.is_dir()
+                           and any(paths.OCR_TEXT_DIR.glob("*.txt"))),
+            "output_dir": str(paths.OCR_TEXT_DIR),
         }
 
     def _watermark_page(self, _params: dict[str, Any]) -> dict[str, Any]:

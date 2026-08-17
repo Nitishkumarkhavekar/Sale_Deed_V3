@@ -57,6 +57,10 @@ BACKUP_DIR = RUNTIME / "backups"
 CONFIG_DIR = RUNTIME / "config"
 CLEANED_DIR = DATA_DIR / "cleaned"
 WATERMARK_DIR = DATA_DIR / "watermark_cleaned"
+#: Plain-text OCR output from the standalone OCR tool. The pipeline keeps its
+#: text in the `ocr_pages` table; this directory exists so the tool page can
+#: hand an operator a readable file without a database round trip.
+OCR_TEXT_DIR = DATA_DIR / "ocr_text"
 
 # -- code -------------------------------------------------------------------
 MIGRATIONS_DIR = SRC / "migrations"
@@ -66,7 +70,8 @@ UI_DIR = SRC / "app" / "ui"
 #: Directories created on demand at startup. Models are absent from this list on
 #: purpose - a missing model is a problem to report, not a directory to invent.
 RUNTIME_DIRS = (DATA_DIR, LOG_DIR, UPLOAD_DIR, EXPORT_DIR, TEMP_DIR,
-                CACHE_DIR, BACKUP_DIR, CONFIG_DIR, CLEANED_DIR, WATERMARK_DIR)
+                CACHE_DIR, BACKUP_DIR, CONFIG_DIR, CLEANED_DIR, WATERMARK_DIR,
+                OCR_TEXT_DIR)
 
 
 def ensure_runtime_dirs() -> None:

@@ -32,6 +32,7 @@ PAGES: tuple[tuple[str, str, str], ...] = (
     ("processing", "processing", "PDF Processing"),
     ("failed_ocr", "failed_ocr", "Failed OCR"),
     ("data", "data_view", "Data View"),
+    ("ocr", "ocr", "OCR Text Extraction"),
     ("watermark", "watermark", "Watermark Remover"),
     ("settings", "settings", "Settings"),
     ("validation", "validation", "Validation Rules"),

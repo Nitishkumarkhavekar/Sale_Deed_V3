@@ -1,0 +1,127 @@
+{{! OCR Text Extraction. Laid out as the Watermark Remover is - notice,
+    dropzone, selected-file table, progress, button row, reference table - so
+    the two tool pages read as one feature rather than two.
+
+    The one structural difference is that this page has live progress. Watermark
+    scanning is a structure walk over a handful of files and finishes inside the
+    call; an OCR pass is minutes per document, so it runs on a worker thread and
+    the status poll refreshes this page while it does. }}
+<div class="page-head">
+  <h1>OCR Text Extraction</h1>
+  <div class="spacer"></div>
+  <span class="pill">
+    <span class="dot {{#running}}busy{{/running}}{{^running}}off{{/running}}"></span>{{engine}}
+  </span>
+</div>
+
+<div class="notice info">
+  <strong>What this does.</strong> Reads the text out of a PDF using the same
+  OCR engine the processing pipeline uses - currently
+  <strong>{{engine_detail}}</strong>, languages <strong>{{languages}}</strong>.
+  Use it to check whether a scan is legible before committing a batch, or to
+  extract text from a few files and send them straight to extraction. The text
+  is written to <code>{{output_dir}}</code> and the original PDF is never
+  modified.
+</div>
+
+{{#engine_bad}}
+<div class="notice danger">
+  <strong>OCR engine unavailable.</strong> {{engine_detail}}
+</div>
+{{/engine_bad}}
+
+<div class="card">
+  <div class="dropzone" id="ocr-dropzone">
+    <div class="big">Upload PDF Files</div>
+    <div class="btn-row" style="justify-content:center;margin-top:12px">
+      <button class="btn-primary" id="btn-ocr-browse">Browse PDFs</button>
+    </div>
+    <div class="hint">Originals are never modified. Extracted text is written alongside.</div>
+  </div>
+</div>
+
+{{#has_files}}
+<div class="card">
+  <h2>Selected Files</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>File</th><th class="num">Pages</th><th class="num">Characters</th>
+        <th class="num">Time</th><th>Result</th><th>Reason</th>
+      </tr></thead>
+      <tbody>
+      {{#files}}
+        <tr>
+          <td>{{name}}</td>
+          <td class="num">{{pages}}</td>
+          <td class="num">{{chars}}</td>
+          <td class="num">{{seconds}}</td>
+          <td>
+            {{#done}}<span class="badge {{result_class}}">{{result}}</span>{{/done}}
+            {{^done}}
+              {{#running}}<span class="badge accent">reading</span>{{/running}}
+              {{^running}}<span class="muted">pending</span>{{/running}}
+            {{/done}}
+          </td>
+          {{! The actual reason, never a bare "failed". Same classifier the
+              pipeline uses, so a file that fails here and inside a batch is
+              described identically. }}
+          <td class="script">{{reason}}{{#code}} <span class="badge mono">{{code}}</span>{{/code}}</td>
+        </tr>
+      {{/files}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{/has_files}}
+
+{{#has_files}}
+<div class="card tight">
+  <h2>Progress</h2>
+  <div class="progress-row">
+    <span class="name">{{#running}}Extracting{{/running}}{{^running}}Processed{{/running}}</span>
+    <span class="bar"><span style="width:{{percent}}%"></span></span>
+    <span class="count">{{processed}} / {{total}} &middot; {{percent}}%</span>
+  </div>
+  <div class="tiles" style="margin-top:14px">
+    <div class="tile violet"><div class="value">{{total}}</div><div class="label">Total</div></div>
+    <div class="tile ok"><div class="value">{{succeeded}}</div><div class="label">Successful</div></div>
+    <div class="tile danger"><div class="value">{{failed}}</div><div class="label">Failed</div></div>
+    <div class="tile accent"><div class="value">{{pending}}</div><div class="label">Pending</div></div>
+  </div>
+  {{#detail}}<div class="hint" style="margin-top:10px">{{detail}}</div>{{/detail}}
+</div>
+{{/has_files}}
+
+<div class="btn-row">
+  <button class="btn-primary" id="btn-ocr-run" {{^can_run}}disabled{{/can_run}}>Run OCR</button>
+  <button class="btn-stop" id="btn-ocr-stop" {{^running}}disabled{{/running}}>&#9632; Stop</button>
+  {{! The integration that makes this more than a viewer: the extracted text is
+      written into the pipeline's own table and the OCR stage marked done, so
+      these documents begin at extraction instead of paying for OCR twice. }}
+  <button class="btn-secondary" id="btn-ocr-queue" {{^can_queue}}disabled{{/can_queue}}>Send to Processing</button>
+  <button id="btn-ocr-open" {{^has_output}}disabled{{/has_output}}>Open Output Folder</button>
+  <button id="btn-ocr-clear">Clear</button>
+</div>
+
+<div class="card tight" style="margin-top:16px">
+  <h2>How Text Is Obtained</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Engine</th><th>How it reads the page</th><th>Suits</th></tr></thead>
+      <tbody>
+        <tr><td>Surya</td>
+            <td class="script">Renders each page and recognises the text with a GPU model. Handles Kannada and Devanagari.</td>
+            <td><span class="badge ok">Scanned deeds</span></td></tr>
+        <tr><td>Embedded text layer</td>
+            <td class="script">Reads the text already stored in the PDF. Instant, no GPU, but returns nothing for a pure scan.</td>
+            <td><span class="badge review">Digitally created PDFs</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="hint" style="margin-top:10px">
+    The engine is chosen in Settings and shared with the processing pipeline -
+    this page does not use a separate configuration. While a batch is running,
+    OCR here waits for the GPU rather than competing for it.
+  </div>
+</div>

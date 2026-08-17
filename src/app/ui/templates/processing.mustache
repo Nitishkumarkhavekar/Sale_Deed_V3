@@ -37,6 +37,68 @@
   {{/stages}}
 
 </div>
+{{! Why each document failed, in words.
+
+    This card exists because the tiles above say "Failed: 9" and nothing more,
+    and "failed" spans a corrupt file, an unreachable AI server and a database
+    error - three problems calling for three different responses. The reason is
+    classified from what is already stored, so it is available for documents
+    that failed long before this card did. }}
+{{#has_failures}}
+<div class="card">
+  <h2>Failed Documents <span class="muted" style="font-weight:400">({{failure_total}})</span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Document</th><th>File</th><th>Stage</th><th>Reason</th>
+        <th class="num">Attempts</th><th></th>
+      </tr></thead>
+      <tbody>
+      {{#failures}}
+        <tr>
+          <td class="mono">{{document_id}}</td>
+          <td>{{source_filename}}</td>
+          <td><span class="badge">{{stage}}</span></td>
+          <td class="script">
+            {{reason}}
+            {{#code}}<span class="badge mono danger">{{code}}</span>{{/code}}
+            {{! The raw text sits behind a disclosure: a Python exception
+                belongs there, not in front of a clerk. }}
+            {{#technical}}
+            <details style="margin-top:4px">
+              <summary class="muted" style="cursor:pointer;font-size:12px">Technical details</summary>
+              <div class="muted mono" style="font-size:12px;margin-top:4px">{{technical}}</div>
+            </details>
+            {{/technical}}
+          </td>
+          <td class="num">{{attempts}}</td>
+          <td>
+            {{#can_rerun}}
+            <button class="btn-secondary btn-rerun-one" data-document-pk="{{document_pk}}">Rerun</button>
+            {{/can_rerun}}
+            {{^can_rerun}}
+              {{#retryable}}<span class="muted" title="Use Reprocess Failed on the Dashboard - this document did not fail at OCR">batch retry</span>{{/retryable}}
+              {{^retryable}}<span class="muted" title="Retrying cannot help - the file itself is the problem">no retry</span>{{/retryable}}
+            {{/can_rerun}}
+          </td>
+        </tr>
+      {{/failures}}
+      </tbody>
+    </table>
+  </div>
+  {{#failures_truncated}}
+  <div class="hint" style="margin-top:10px">
+    Showing the first {{failures_hidden}} of {{failure_total}} - open
+    <a href="#failed_ocr">Failed OCR</a> for the complete list.
+  </div>
+  {{/failures_truncated}}
+  <div class="hint" style="margin-top:10px">
+    Rerun retries one document's OCR. A document that failed at a later stage is
+    retried with <strong>Reprocess Failed</strong> on the Dashboard, which
+    restarts the batch's failures from the beginning.
+  </div>
+</div>
+{{/has_failures}}
 {{/active}}
 {{^active}}
 <div class="card"><div class="empty">No batch is being processed.</div></div>

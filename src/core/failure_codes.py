@@ -104,7 +104,18 @@ STAGES: dict[str, str] = {
 _PATTERNS: tuple[tuple[str, str], ...] = (
     (r"exceeds the available context size|n_ctx|too many tokens", AI_INPUT_TOO_LARGE),
     (r"could not be made because the target machine actively refused"
-     r"|EngineNotReadyError|connection refused|URLError|llama-server (exited|did not)",
+     r"|EngineNotReadyError|connection refused|URLError|llama-server (exited|did not)"
+     # The extraction stage's own wording, added after finding that its four
+     # most explicit messages - "AI server unreachable at ...", "still
+     # loading", "up but not admitting work", "refused work for ..." - matched
+     # nothing here and fell through to the generic "AI processing failed for
+     # this deed". The one condition an operator can actually act on was the
+     # one being described in the vaguest terms.
+     r"|AI server (unreachable|is still loading|is up but not admitting"
+     r"|refused work)"
+     # 5xx only. A 4xx is the request's fault, not the server's, and calling it
+     # "unavailable" would send an operator to restart a healthy service.
+     r"|AI server HTTP 5\d\d",
      AI_SERVER_UNAVAILABLE),
     (r"no parseable JSON|no usable JSON|unparseable|empty response",
      AI_EXTRACTION_FAILED),

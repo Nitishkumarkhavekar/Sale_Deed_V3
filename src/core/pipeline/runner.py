@@ -580,6 +580,12 @@ class BatchRunner:
             return _NullLease()
         return self.governor.gpu_lease(name)
 
+    #: Public alias. The OCR tool page runs the same `OcrStage` outside the
+    #: pipeline and must take the same lease - a second Surya process resident
+    #: alongside the language model is precisely what the governor exists to
+    #: prevent, and on a 4 GB card one of them would OOM mid-document.
+    gpu_lease = _lease
+
     # -- stage wrappers, each its own transaction -------------------------
 
     def _prepare_document(self, doc_pk: int, pdf_path: str) -> str:

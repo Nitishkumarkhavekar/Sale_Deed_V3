@@ -20,6 +20,10 @@
   //: is distinct from 0 - without that distinction the first poll after load
   //: looks like a change and refreshes the page out from under the operator.
   let lastFailedOcr = null;
+  // True while an OCR tool run is in flight. Kept so the page gets one final
+  // render on the tick the run ends, rather than stopping a refresh short and
+  // leaving the last file's result invisible.
+  let ocrWasRunning = false;
   const POLL_MS = 2500;
 
   // In-flight calls, keyed by request id. Python replies on the `completed`
@@ -236,8 +240,27 @@
     }
     if (typeof s.failed_ocr === "number") lastFailedOcr = s.failed_ocr;
 
+    // The OCR tool page, refreshed off the poll already running rather than a
+    // timer of its own. Re-rendered on every tick while the run is active - the
+    // per-file rows, counts and reasons all change - and once more on the tick
+    // the run ends, so the final state is never left one refresh behind.
+    if (currentPage === "ocr" && s.ocr_tool) {
+      if (s.ocr_tool.running || ocrWasRunning) {
+        ocrWasRunning = s.ocr_tool.running;
+        navigate("ocr");
+        return;
+      }
+    }
+
     // A finished batch changes more than numbers; a full refresh is warranted.
     if (s.batch_completed) navigate(currentPage);
+  }
+
+  // Kicks the page over to the live view the moment a run starts, instead of
+  // waiting up to a full poll interval for the first tick.
+  function ocrWatch() {
+    ocrWasRunning = true;
+    poll();
   }
 
   function poll() {
@@ -363,7 +386,11 @@
             // would look like the button is broken.
             toast(r.detail || (r.count + " document(s) queued."),
                   r.count ? "ok" : "warn");
-            navigate("failed_ocr");
+            // The current page, not always "failed_ocr": the same rerun button
+            // now appears in the Processing page's failure list, and sending an
+            // operator to a different screen after pressing it there would be a
+            // navigation they did not ask for.
+            navigate(currentPage);
           })
           .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
         return;
@@ -470,6 +497,10 @@
           call("watermark", { action: "browse" })
             .then(function () { navigate(currentPage); })
             .catch(function (e) { toast(e.message, "danger"); });
+        } else if (t.id === "ocr-dropzone") {
+          call("ocr_tool", { action: "browse" })
+            .then(function () { navigate(currentPage); })
+            .catch(function (e) { toast(e.message, "danger"); });
         } else {
           call("pick_files", {})
             .then(function (r) { if (r.count) navigate(currentPage); })
@@ -506,6 +537,36 @@
             } else if (action === "open" && r.path) {
               call("open_path", { path: r.path })
                 .catch(function () { toast("Cleaned copies are in " + r.path, "info"); });
+            }
+            if (action !== "open") navigate(currentPage);
+          })
+          .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
+        return;
+      }
+
+      // The OCR tool page, alongside the watermark one and for the same reason:
+      // it keeps its own selection, separate from the upload staging area.
+      if (t.id === "btn-ocr-browse" || t.id === "btn-ocr-run" ||
+          t.id === "btn-ocr-stop" || t.id === "btn-ocr-queue" ||
+          t.id === "btn-ocr-open" || t.id === "btn-ocr-clear") {
+        const action = t.id.slice("btn-ocr-".length);
+        if (action === "clear" && !confirm("Clear the file list and all OCR results?")) return;
+        busy(t, true);
+        call("ocr_tool", { action: action })
+          .then(function (r) {
+            busy(t, false);
+            if (action === "run") {
+              // Returns once the worker thread is up, not when OCR finishes.
+              // `ocrWatch` takes over from here.
+              toast("Reading " + r.started + " file(s) with " + r.engine + ".", "ok");
+              ocrWatch();
+            } else if (action === "stop") {
+              toast("Stopping after the file being read now.", "warn");
+            } else if (action === "queue") {
+              toast(r.detail, "ok");
+            } else if (action === "open" && r.path) {
+              call("open_path", { path: r.path })
+                .catch(function () { toast("Extracted text is in " + r.path, "info"); });
             }
             if (action !== "open") navigate(currentPage);
           })
