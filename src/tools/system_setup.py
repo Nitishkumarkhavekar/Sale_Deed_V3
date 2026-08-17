@@ -293,17 +293,50 @@ def print_system(info: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _winget_install(package: str, label: str) -> tuple[bool, str]:
-    """Install through winget. Returns (installed, detail)."""
+#: Failure text that means "try again", not "this will never work". A refused
+#: connection or a truncated download is worth one more attempt; a package that
+#: does not exist is not, and retrying it just makes the operator wait twice.
+_TRANSIENT = ("network", "timed out", "timeout", "connection", "temporarily",
+              "0x8a15", "could not be resolved", "downloading", "hash",
+              "server", "retry")
+
+
+def _looks_transient(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _TRANSIENT)
+
+
+def _winget_install(package: str, label: str,
+                    attempts: int = 2) -> tuple[bool, str]:
+    """Install through winget, retrying a transient failure once.
+
+    An installer that gives up on a dropped connection sends the operator back
+    to the start of a twenty-minute run for a fault that would have cleared on
+    its own. Only failures that read as transient are retried: a wrong package
+    id fails identically the second time and retrying it wastes their time.
+    """
     if not shutil.which("winget"):
         return False, "winget is unavailable on this machine"
-    code, out = _run(["winget", "install", "-e", "--id", package,
-                      "--accept-source-agreements", "--accept-package-agreements",
-                      "--silent"], timeout=2400)
-    if code == 0:
-        return True, f"{label} installed"
-    tail = out.strip().splitlines()[-1] if out.strip() else f"exit {code}"
-    return False, tail[:90]
+
+    last = ""
+    for attempt in range(1, max(1, attempts) + 1):
+        code, out = _run(["winget", "install", "-e", "--id", package,
+                          "--accept-source-agreements",
+                          "--accept-package-agreements", "--silent"],
+                         timeout=2400)
+        if code == 0:
+            suffix = "" if attempt == 1 else f" (attempt {attempt})"
+            return True, f"{label} installed{suffix}"
+
+        last = (out.strip().splitlines()[-1] if out.strip() else f"exit {code}")
+        if attempt >= attempts or not _looks_transient(out):
+            break
+        _log(f"{label}: transient failure, retrying - {last[:90]}")
+        print(f"          retrying {label} after a transient failure ...",
+              flush=True)
+        time.sleep(5)
+
+    return False, last[:90]
 
 
 def ensure_python_312(report: Report, install: bool) -> None:

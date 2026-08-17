@@ -73,17 +73,72 @@ if not defined PYEXE (
 REM No configured interpreter yet is the normal first-run state.
 if not defined PYEXE if defined PYANY set "PYEXE=%PYANY%"
 
+REM -------------------------------------------------------------------
+REM  No Python at all: install it, rather than telling the operator to.
+REM
+REM  This is the one step that cannot live in system_setup.py, because that
+REM  script is Python. On a genuinely clean Windows machine nothing else in
+REM  this installer can run until this succeeds.
+REM
+REM  winget is present on Windows 10 1809+ and Windows 11. Where it is absent
+REM  - an old build, or a machine with the Store stripped - there is no
+REM  scriptable install path, so the manual instruction is still printed.
+REM -------------------------------------------------------------------
+
 if not defined PYEXE (
-    echo   Python was not found on this machine.
+    echo   Python was not found. Installing Python 3.13 ...
     echo.
-    echo   Install Python 3.13, then run this file again:
+
+    where winget >nul 2>&1
+    if errorlevel 1 (
+        echo   winget is not available on this machine, so Python cannot be
+        echo   installed automatically.
+        echo.
+        echo   Install Python 3.13 by hand, then run this file again:
+        echo       https://www.python.org/downloads/
+        echo.
+        echo   Tick "Add python.exe to PATH" if the installer offers it.
+        echo.
+        pause
+        exit /b 1
+    )
+
+    REM --scope machine needs administrator; fall back to a per-user install,
+    REM which needs none and is enough for everything this application does.
+    winget install --id Python.Python.3.13 --scope machine ^
+        --accept-package-agreements --accept-source-agreements --silent
+    if errorlevel 1 (
+        echo   Machine-wide install did not succeed; trying a per-user install.
+        winget install --id Python.Python.3.13 ^
+            --accept-package-agreements --accept-source-agreements --silent
+    )
+
+    REM  Re-probe through `py`, the launcher Windows installs into System32.
+    REM  It is on PATH immediately, whereas python.exe usually is not until a
+    REM  new shell picks up the changed PATH - so probing `python` here would
+    REM  report failure on a perfectly good install.
+    for %%V in (3.13 3.12 3.14) do (
+        if not defined PYEXE (
+            py -%%V -c "import sys" >nul 2>&1 && set "PYEXE=py -%%V"
+        )
+    )
+    if not defined PYEXE (
+        python -c "import sys" >nul 2>&1 && set "PYEXE=python"
+    )
+
+    if not defined PYEXE (
+        echo.
+        echo   Python was installed but is not visible to this window yet.
+        echo   That is normal - PATH changes reach a shell only when it starts.
+        echo.
+        echo   Close this window and run "System Setup.bat" again. It will
+        echo   pick up from here; nothing already done is repeated.
+        echo.
+        pause
+        exit /b 1
+    )
+    echo   Python installed: %PYEXE%
     echo.
-    echo       winget install Python.Python.3.13
-    echo.
-    echo   Tick "Add python.exe to PATH" if the installer offers it.
-    echo.
-    pause
-    exit /b 1
 )
 
 echo   Using: %PYEXE%

@@ -1,7 +1,7 @@
 # Installation Report
 
-**Generated:** 2026-08-14T15:26:22
-**Duration:** 9s
+**Generated:** 2026-08-17T10:38:25
+**Duration:** 8s
 
 ## System
 
@@ -17,7 +17,7 @@
 | cores_physical | 8 |
 | cores_logical | 16 |
 | ram_total_gb | 7.4 |
-| ram_available_gb | 2.0 |
+| ram_available_gb | 1.0 |
 | cuda_available | True |
 | cuda_version | 12.7 |
 | driver_version | 566.07 |
@@ -36,7 +36,7 @@
 | Folders | missing | 1 would be created | 0.0 |
 | Visual C++ runtime | found | present | 0.0 |
 | Python 3.12 (OCR) | found | present | 0.1 |
-| Python packages | found | 6 import cleanly | 2.3 |
+| Python packages | found | 6 import cleanly | 2.1 |
 | Migrations | found | already at head | 1.2 |
 | Configuration | found | .env exists | 0.0 |
 | Inference runtime | found | llama-server.exe | 0.0 |
