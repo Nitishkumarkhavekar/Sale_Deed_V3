@@ -288,7 +288,23 @@ class Bridge(QObject):
     @Slot(str, str)
     def delete_batch(self, request_id: str, payload: str) -> None:
         self._run("delete_batch",
-                  lambda p: self.service.delete_batch(int(p.get("batch_id") or 0)),
+                  lambda p: self.service.delete_batch(
+                      int(p.get("batch_id") or 0), force=bool(p.get("force"))),
+                  payload, request_id)
+
+    @Slot(str, str)
+    def batch_action(self, request_id: str, payload: str) -> None:
+        """Run, stop or delete one batch.
+
+        One slot for all three rather than three slots: the guards are a single
+        state machine in the service, and splitting the entry points would
+        invite a caller that reaches one transition without passing the others.
+        """
+        self._run("batch_action",
+                  lambda p: self.service.batch_action(
+                      int(p.get("batch_id") or 0),
+                      str(p.get("action") or ""),
+                      confirm=bool(p.get("confirm"))),
                   payload, request_id)
 
     # -- configuration -----------------------------------------------------

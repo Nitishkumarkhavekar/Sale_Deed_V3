@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -24,7 +25,12 @@ from typing import Any
 from core import paths
 from core.csv_export import DocumentExport, FailedDocument, write_csv, write_failed_csv
 from core.db.engine import build_engine, build_session_factory, check_connection, session_scope
-from core.db.models import BatchState, DocumentState
+from core.db.models import (
+    BUSY_BATCH_STATES,
+    RESUMABLE_BATCH_STATES,
+    BatchState,
+    DocumentState,
+)
 from core.failure_codes import classify as _cause
 from core.failure_codes import describe as _describe
 from core.pdf_validation import CORRUPT_STATUSES
@@ -83,6 +89,16 @@ def _validation_class(status: str | None) -> str:
     if status in ("PARTIALLY_CORRUPTED", "UNKNOWN_FAILURE"):
         return "review"
     return "danger"
+
+
+#: Batch-management operations log here, so every Run/Stop/Delete leaves a
+#: trace next to the pipeline's own stage lines in runtime/logs/saledeed.log.
+log = logging.getLogger("saledeed.batches")
+
+#: Batches the management table shows. Everything that is not finished - a
+#: stopped batch had no home before this and was unreachable from the UI.
+LIVE_BATCH_STATES = (BatchState.QUEUED, BatchState.RUNNING, BatchState.STOPPING,
+                     BatchState.STOPPED, BatchState.PAUSED)
 
 
 def _log_corrupt_export(rows: int, path: Path) -> None:
@@ -1023,14 +1039,256 @@ class AppService:
                 "skipped": skipped,
                 "detail": detail + (" Processing started." if started else "")}
 
-    def delete_batch(self, batch_id: int) -> dict[str, Any]:
+    # -- per-batch management ---------------------------------------------
+    #
+    # The runner's start/pause/stop are global: they govern the worker threads,
+    # not any one batch. These act on a single batch by changing its row, which
+    # is what lets one batch be stopped while another keeps running - the runner
+    # never learns about it, it simply finds a different batch to claim from.
+
+    #: How long a forced delete waits for the in-flight document to be released.
+    #: Short on purpose. Deleting rows a worker is holding would fail mid-stage
+    #: with a stale-object error, so the wait is a safety interlock, not a
+    #: convenience; when it expires the operator is told to try again rather
+    #: than being made to watch a spinner for the several minutes a long deed
+    #: can take.
+    DELETE_SETTLE_TIMEOUT_S = 20.0
+
+    def batch_action(self, batch_id: int, action: str,
+                     confirm: bool = False) -> dict[str, Any]:
+        """Run, stop or delete one batch.
+
+        Every guard lives here rather than in the UI. The dashboard refreshes on
+        a timer, so any page more than a moment old can offer an action that has
+        since become invalid - and two windows can be open at once. The button
+        being visible is never taken as evidence that the action is legal.
+        """
+        if not self.db_ok:
+            raise RuntimeError(self.db_detail.splitlines()[0])
+        if action not in ("run", "stop", "delete"):
+            raise ValueError(f"unknown batch action {action!r}")
+        if action == "delete":
+            return self.delete_batch(batch_id, force=confirm)
+
         with session_scope(self.sessions) as session:
             uow = UnitOfWork(session)
             batch = uow.batches.get(batch_id)
             if batch is None:
                 raise RepositoryError(f"Batch {batch_id} not found.")
+            name, state = batch.name, batch.state
+
+            if action == "run":
+                result = self._run_batch(uow, batch)
+            else:
+                result = self._stop_batch(uow, batch)
+
+        # `batch_name`, not `name`: `name` is a reserved LogRecord attribute and
+        # passing it through `extra` raises at emit time - a logging call that
+        # crashes the operation it was meant to record.
+        log.info("batch %s: %s -> %s", action, state.value, result["state"],
+                 extra={"batch": batch_id, "batch_name": name, "action": action})
+
+        if action == "run":
+            # Starting the runner is deliberately outside the session: it spawns
+            # threads, and holding a transaction open across that would keep a
+            # row lock for as long as the thread pool took to come up.
+            self.runner.start()
+        return {"batch_id": batch_id, "name": name, **result,
+                "status": self.status()}
+
+    @staticmethod
+    def _manage_row(batch: Any, progress: Any) -> dict[str, Any]:
+        """One row of the batch-management table.
+
+        The action flags are computed from the same state machine the service
+        enforces, so a button is offered only when pressing it would succeed.
+        `needs_force` marks the case the specification singles out: deleting a
+        batch that is mid-processing is allowed, but only behind a second,
+        differently-worded confirmation.
+        """
+        total = progress.total if progress else 0
+        done = progress.completed if progress else 0
+        failed = progress.failed if progress else 0
+        review = progress.needs_review if progress else 0
+        finished = done + failed + review
+        state = batch.state
+        return {
+            "id": batch.id,
+            "name": batch.name,
+            "state": state.value,
+            # Title-cased for the badge; "stopping" reads as a status, "Stopping"
+            # reads as a label.
+            "state_label": state.value.title(),
+            "username": batch.user.username if batch.user else "-",
+            "created_at": local_time(batch.created_at),
+            "started_at": local_time(batch.started_at) if batch.started_at else "-",
+            "file_count": batch.file_count,
+            "size": human_bytes(batch.total_bytes),
+            # `total` is what the database holds; `file_count` is what was
+            # uploaded. They agree unless a batch is still being written, and
+            # showing both would only invite the question of why they differ.
+            "processed": finished,
+            "completed": done,
+            "failed": failed,
+            "needs_review": review,
+            "pending": max(0, (total or batch.file_count) - finished),
+            "percent": round(100.0 * finished / total, 1) if total else 0.0,
+            "can_run": state in RESUMABLE_BATCH_STATES or state is BatchState.QUEUED,
+            "run_label": "Run" if state is BatchState.QUEUED else "Resume",
+            "can_stop": state in (BatchState.QUEUED, BatchState.RUNNING),
+            "needs_force": state in BUSY_BATCH_STATES,
+            "is_stopping": state is BatchState.STOPPING,
+        }
+
+    def _run_batch(self, uow: UnitOfWork, batch: Any) -> dict[str, Any]:
+        """Queue a batch for processing, resuming a stopped one in place."""
+        if batch.state is BatchState.RUNNING:
+            raise RepositoryError(
+                f"{batch.name!r} is already running.")
+        if batch.state is BatchState.STOPPING:
+            raise RepositoryError(
+                f"{batch.name!r} is still stopping. Wait for the document in "
+                "flight to finish, then run it again.")
+
+        if batch.state is BatchState.QUEUED:
+            # Already queued: the operator means "start now", so move it to the
+            # head. Its position relative to nothing else changes if it is
+            # already there.
+            uow.batches.promote(batch)
+            return {"state": BatchState.QUEUED.value,
+                    "detail": f"{batch.name!r} is next in the queue."}
+
+        if batch.state is BatchState.COMPLETED:
+            # A completed batch is only ever marked so when every document has
+            # reached a terminal state, so there is nothing for Run to do. The
+            # documents that did *not* succeed are a different request, and the
+            # message points at the button that serves it.
+            raise RepositoryError(
+                f"{batch.name!r} has already finished. Use Reprocess Failed to "
+                "retry the documents that did not succeed.")
+
+        uow.batches.resume(batch)
+        pending = uow.batches.progress(batch.id)
+        remaining = 0 if pending is None else max(
+            0, pending.total - pending.completed - pending.failed
+            - pending.needs_review)
+        return {"state": BatchState.QUEUED.value,
+                "detail": (f"{batch.name!r} resumed with {remaining} document(s) "
+                           "left; work already done is kept.")}
+
+    def _stop_batch(self, uow: UnitOfWork, batch: Any) -> dict[str, Any]:
+        """Ask a batch to stop, allowing in-flight work to finish."""
+        if batch.state is BatchState.STOPPING:
+            raise RepositoryError(f"{batch.name!r} is already stopping.")
+        if batch.state in (BatchState.STOPPED, BatchState.PAUSED):
+            raise RepositoryError(f"{batch.name!r} is already stopped.")
+        if batch.state in (BatchState.COMPLETED, BatchState.FAILED):
+            raise RepositoryError(
+                f"{batch.name!r} has already finished; there is nothing to stop.")
+
+        in_flight = uow.batches.in_flight(batch.id)
+        state = uow.batches.request_stop(batch)
+        if state is BatchState.STOPPING:
+            detail = (f"Stopping {batch.name!r}. {in_flight} document(s) "
+                      "already in progress will finish first.")
+        else:
+            detail = f"{batch.name!r} stopped. No document was interrupted."
+        return {"state": state.value, "detail": detail}
+
+    def delete_batch(self, batch_id: int, force: bool = False) -> dict[str, Any]:
+        """Remove a batch, its rows and its derived files.
+
+        What is removed and what is not:
+
+          * **Database rows** - the batch and, by cascade, its documents, OCR
+            pages, extractions, people, properties, validations and failure
+            events. Scoped by foreign key, so no other batch is touched.
+          * **Prepared copies** - the overlay-stripped PDFs under
+            `runtime/data/cleaned`. These are derived, regenerable and useless
+            once the rows they belong to are gone. Deleted by the paths recorded
+            on the documents rather than by sweeping the directory: two batches
+            can hold a file of the same name, and a sweep would take the other
+            batch's copy.
+          * **Not the source PDFs.** They are the operator's own files, often
+            the only copy, and were never ours to remove.
+          * **Not exported CSVs.** They are deliverables that were explicitly
+            asked for; deleting a batch is not a request to destroy a report
+            already produced from it.
+        """
+        if not self.db_ok:
+            raise RuntimeError(self.db_detail.splitlines()[0])
+
+        with session_scope(self.sessions) as session:
+            uow = UnitOfWork(session)
+            batch = uow.batches.get(batch_id)
+            if batch is None:
+                raise RepositoryError(f"Batch {batch_id} not found.")
+            if batch.state in BUSY_BATCH_STATES and not force:
+                raise RepositoryError(
+                    f"{batch.name!r} is {batch.state.value}. Stop it first, or "
+                    "confirm deletion to stop and delete it.")
+
+        if force:
+            self._settle_for_delete(batch_id)
+
+        with session_scope(self.sessions) as session:
+            uow = UnitOfWork(session)
+            batch = uow.batches.get(batch_id)
+            if batch is None:
+                # Another window won the race. Deleting an already-deleted batch
+                # is the outcome the operator asked for, so it is not an error.
+                return {"deleted": batch_id, "files_removed": 0,
+                        "detail": "Batch was already deleted."}
+            name = batch.name
+            stale = uow.batches.in_flight(batch_id)
+            if stale:
+                raise RepositoryError(
+                    f"{name!r} still has {stale} document(s) in progress. It has "
+                    "been asked to stop - try deleting again in a moment.")
+            paths = uow.batches.cleaned_paths(batch_id)
             session.delete(batch)
-        return {"deleted": batch_id}
+
+        # Files are removed only after the rows are committed. Reversed, a
+        # failed commit would leave rows pointing at files that no longer exist,
+        # which is the one inconsistency the viewer cannot recover from.
+        removed = self._remove_files(paths)
+        log.info("batch deleted: %s (%d prepared file(s) removed)", name, removed,
+                 extra={"batch": batch_id, "batch_name": name, "files": removed})
+        return {"deleted": batch_id, "name": name, "files_removed": removed,
+                "detail": f"Deleted {name!r} and {removed} prepared file(s)."}
+
+    def _settle_for_delete(self, batch_id: int) -> None:
+        """Stop a busy batch and wait, briefly, for its worker to let go."""
+        with session_scope(self.sessions) as session:
+            uow = UnitOfWork(session)
+            batch = uow.batches.get(batch_id)
+            if batch is None or batch.state not in BUSY_BATCH_STATES:
+                return
+            if batch.state is BatchState.RUNNING:
+                uow.batches.request_stop(batch)
+
+        deadline = time.monotonic() + self.DELETE_SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            with session_scope(self.sessions) as session:
+                if UnitOfWork(session).batches.in_flight(batch_id) == 0:
+                    return
+            time.sleep(0.5)
+
+    @staticmethod
+    def _remove_files(paths: list[str]) -> int:
+        removed = 0
+        for raw in paths:
+            try:
+                path = Path(raw)
+                if path.is_file():
+                    path.unlink()
+                    removed += 1
+            except OSError as exc:
+                # A file left behind is untidy; a delete that half-succeeded and
+                # then raised would leave the operator unable to tell whether
+                # the batch is gone. The rows are already committed by now.
+                log.warning("could not remove prepared file %s: %s", raw, exc)
+        return removed
 
     def _devanagari_label(self) -> str:
         """What the header pill says about language handling."""
@@ -1186,7 +1444,7 @@ class AppService:
             notice = {"level": "warn", "message": html.escape(self.errors[-1])}
 
         active_model: dict[str, Any] | None = None
-        queued: list[dict[str, Any]] = []
+        manage: list[dict[str, Any]] = []
         completed: list[dict[str, Any]] = []
         total_completed = 0
 
@@ -1210,12 +1468,14 @@ class AppService:
                         "started_at": active.started_at,
                     }
 
-                rows, _ = uow.batches.list_paginated(1, 10, [BatchState.QUEUED])
-                queued = [{"id": b.id, "name": b.name, "file_count": b.file_count,
-                           "size": human_bytes(b.total_bytes),
-                           "username": b.user.username if b.user else "-",
-                           "created_at": local_time(b.created_at),
-                           "state": b.state.value} for b in rows]
+                # Every batch that is not finished, in one table. Split across
+                # a "queued" list and a separate running panel, an operator had
+                # no single place showing what exists and what can be done to
+                # it - and no way at all to reach a stopped batch.
+                rows, _ = uow.batches.list_paginated(1, 20, LIVE_BATCH_STATES)
+                live_progress = uow.batches.progress_many([b.id for b in rows])
+                manage = [self._manage_row(b, live_progress.get(b.id))
+                          for b in rows]
 
                 done_rows, total_completed = uow.batches.list_paginated(
                     page, 5, [BatchState.COMPLETED, BatchState.FAILED])
@@ -1231,10 +1491,14 @@ class AppService:
                         "id": b.id, "name": b.name, "total": p.total,
                         "completed": p.completed, "needs_review": p.needs_review,
                         "failed": p.failed, "has_failed": p.failed > 0,
+                        # A failed batch is resumable - it stopped short, and
+                        # the documents it never reached are still pending.
+                        "can_resume": b.state in RESUMABLE_BATCH_STATES,
+                        "state": b.state.value,
                         "finished_at": local_time(b.finished_at)})
 
         return dashboard_model(
-            active=active_model, queued=queued, completed=completed,
+            active=active_model, manage=manage, completed=completed,
             page=page, completed_total=total_completed,
             max_queued=MAX_QUEUED_BATCHES, notice=notice)
 

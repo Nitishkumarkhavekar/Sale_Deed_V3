@@ -25,11 +25,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, case, func, select, update
+from sqlalchemy import Select, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .models import (
+    RESUMABLE_BATCH_STATES,
     Batch,
     BatchState,
     Document,
@@ -242,6 +243,120 @@ class BatchRepository(_Base):
             batch.finished_at = _now()
         self.session.flush()
 
+    # -- manual control ----------------------------------------------------
+    #
+    # Everything below is driven by an operator pressing a button, so each one
+    # decides for itself whether the transition is legal and says why when it is
+    # not. The alternative - trusting the UI to only offer valid actions - fails
+    # the moment two windows are open, or a page is a few seconds stale.
+
+    def in_flight(self, batch_id: int) -> int:
+        """Documents a worker is currently inside.
+
+        This is what makes Stop safe. A batch may leave `STOPPING` only when
+        this reaches zero, because a document in a RUNNING stage is mid-OCR or
+        mid-extraction and killing it would discard that work.
+
+        `overall_state == PROCESSING` is part of the question, not a
+        refinement of it. A document that has reached a terminal overall state
+        can still carry a stage column left at RUNNING - `_finish` records the
+        verdict on the document without walking back over the stages it
+        skipped - and counting those made a *finished* batch report work in
+        flight for ever. The symptom was a completed batch that could not be
+        deleted, because the delete interlock waited for an in-flight document
+        that had stopped existing.
+        """
+        running = [column == StageState.RUNNING
+                   for column in STAGE_COLUMNS.values()]
+        return self.session.scalar(
+            select(func.count()).select_from(Document)
+            .where(Document.batch_id == batch_id,
+                   Document.overall_state == DocumentState.PROCESSING,
+                   or_(*running))) or 0
+
+    def request_stop(self, batch: Batch) -> BatchState:
+        """Ask a batch to stop. Returns the state it landed in.
+
+        A queued batch has nothing in flight, so it stops at once. A running one
+        enters `STOPPING` and is settled by the runner when its last worker lets
+        go - the wait is the point, not a limitation.
+        """
+        if batch.state is BatchState.QUEUED:
+            self.set_state(batch, BatchState.STOPPED)
+            return BatchState.STOPPED
+        if batch.state is BatchState.RUNNING:
+            if self.in_flight(batch.id) == 0:
+                # Nothing to wait for; skipping STOPPING avoids showing the
+                # operator a transitional state that would last milliseconds.
+                self.set_state(batch, BatchState.STOPPED)
+                return BatchState.STOPPED
+            self.set_state(batch, BatchState.STOPPING)
+            return BatchState.STOPPING
+        raise RepositoryError(
+            f"A {batch.state.value} batch cannot be stopped.")
+
+    def settle_stopping(self) -> list[int]:
+        """Move every `STOPPING` batch whose workers have let go to `STOPPED`.
+
+        Called from the runner loop and again at startup. Startup matters: a
+        process killed mid-stop leaves a batch in `STOPPING` for ever otherwise,
+        and `STOPPING` is not resumable - the batch would be stranded in a state
+        with no exit.
+        """
+        settled: list[int] = []
+        rows = self.session.scalars(
+            select(Batch).where(Batch.state == BatchState.STOPPING))
+        for batch in rows:
+            if self.in_flight(batch.id) == 0:
+                self.set_state(batch, BatchState.STOPPED)
+                settled.append(batch.id)
+        return settled
+
+    def resume(self, batch: Batch) -> None:
+        """Return a stopped batch to the queue, at the head.
+
+        No document state is touched. Stages commit as they complete, so the
+        work already done is simply not claimable again - resuming continues
+        from the next unfinished document rather than from the beginning.
+
+        It goes to the *head* because the operator has just asked for this batch
+        specifically; sending it to the back of a queue it was already ahead of
+        would be a surprising answer to "Run".
+        """
+        if batch.state not in RESUMABLE_BATCH_STATES:
+            raise RepositoryError(
+                f"A {batch.state.value} batch cannot be resumed.")
+        head = self.session.scalar(
+            select(func.min(Batch.queue_position))
+            .where(Batch.state.in_((BatchState.QUEUED, BatchState.RUNNING))))
+        batch.queue_position = (head - 1) if head is not None else 0
+        # `finished_at` is cleared: a resumed batch has not finished, and a
+        # stale timestamp there would show a completion time in the past for a
+        # batch that is about to run.
+        batch.finished_at = None
+        self.set_state(batch, BatchState.QUEUED)
+
+    def promote(self, batch: Batch) -> None:
+        """Make a queued batch the next one to start, without reordering others."""
+        head = self.session.scalar(
+            select(func.min(Batch.queue_position))
+            .where(Batch.state.in_((BatchState.QUEUED, BatchState.RUNNING))))
+        if head is not None and batch.queue_position > head:
+            batch.queue_position = head - 1
+            self.session.flush()
+
+    def cleaned_paths(self, batch_id: int) -> list[str]:
+        """Prepared-copy paths for one batch, so deletion can remove the files.
+
+        Scoped by batch id in SQL rather than by walking a directory: two batches
+        can contain a document with the same stem, and a directory sweep would
+        delete the other batch's copy.
+        """
+        return [p for (p,) in self.session.execute(
+            select(Document.cleaned_path)
+            .where(Document.batch_id == batch_id,
+                   Document.cleaned_path.is_not(None))) if p]
+
     def progress(self, batch_id: int) -> BatchProgress | None:
         """Per-stage counts for one batch, in a single round trip."""
         return self.progress_many([batch_id]).get(batch_id)
@@ -438,18 +553,65 @@ class DocumentRepository(_Base):
         A document left RUNNING means the process died mid-stage. Returning it to
         PENDING makes it claimable again. Safe because stages are idempotent: the
         work is redone, not double-counted.
+
+        **The attempt counter is given back.** `claim_next` increments it on the
+        way in, so a process killed mid-OCR has already been charged for an
+        attempt that never produced a result. Charging it anyway is not merely
+        unfair to the document - past the retry cap it becomes unclaimable while
+        still sitting at PENDING, which is neither runnable nor finished. Its
+        batch can then never finalise and holds `RUNNING` for ever, blocking
+        every queued batch behind it. That state was found on this machine:
+        seven documents at three attempts against a cap of two, with two batches
+        stuck behind them. A crash is not a failed attempt.
+
+        `stranded()` remains as the backstop for rows that reach that state by
+        any other route.
         """
         total = 0
         for stage in STAGE_ORDER:
             column = STAGE_COLUMNS[stage]
+            attempts = STAGE_ATTEMPTS.get(stage)
+            values: dict[str, Any] = {f"{stage}_state": StageState.PENDING}
+            if attempts is not None:
+                # Floored at zero: a counter that has not been incremented must
+                # not go negative and make the cap arithmetic meaningless.
+                values[f"{stage}_attempts"] = case(
+                    (attempts > 0, attempts - 1), else_=0)
             stmt = update(Document).where(column == StageState.RUNNING)
             if batch_id is not None:
                 stmt = stmt.where(Document.batch_id == batch_id)
-            result = self.session.execute(
-                stmt.values(**{f"{stage}_state": StageState.PENDING}))
+            result = self.session.execute(stmt.values(**values))
             total += result.rowcount or 0
         self.session.flush()
         return total
+
+    def stranded(self, retry_limits: dict[str, int],
+                 batch_id: int | None = None) -> list[tuple[int, str]]:
+        """Documents that can neither be claimed nor counted as finished.
+
+        A document is stranded when a stage sits at PENDING with more attempts
+        than `claim_next` will accept, while `overall_state` is still
+        PROCESSING. Nothing will ever pick it up, and `is_finished` will never
+        return true for its batch - so the batch holds `RUNNING` and the queue
+        behind it never advances.
+
+        Returns `(document_pk, stage)` so the caller can fail each one with a
+        reason naming the stage that gave up, rather than a bare "failed".
+        """
+        found: list[tuple[int, str]] = []
+        for stage, attempts in STAGE_ATTEMPTS.items():
+            # Mirrors `claim_next`'s cap exactly. Written from the same limit the
+            # runner passes, so the two cannot drift apart and re-create the
+            # gap this method exists to close.
+            max_attempts = retry_limits.get(stage, 1) + 1
+            conditions = [STAGE_COLUMNS[stage] == StageState.PENDING,
+                          Document.overall_state == DocumentState.PROCESSING,
+                          attempts > max_attempts]
+            if batch_id is not None:
+                conditions.append(Document.batch_id == batch_id)
+            found.extend((pk, stage) for pk in self.session.scalars(
+                select(Document.id).where(*conditions)))
+        return found
 
     def list_for_batch(self, batch_id: int, page: int = 1, per_page: int = 10,
                        states: Sequence[DocumentState] | None = None,

@@ -46,6 +46,13 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: `alembic.ini` sits beside the five top-level folders, not inside `src`, and
+#: its `script_location` is written relative to itself. Alembic must therefore be
+#: launched from the project root - run from `src` it reports "No 'script_location'
+#: key found in configuration" and exits non-zero, which is exactly what every
+#: --upgrade path here did until this was noticed while adding a migration.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from core import paths
@@ -145,12 +152,13 @@ def _log(message: str) -> None:
         handle.write(f"{stamp}  {message}\n")
 
 
-def _run(command: list[str], timeout: float = 1800.0) -> tuple[int, str]:
+def _run(command: list[str], timeout: float = 1800.0,
+         cwd: Path | None = None) -> tuple[int, str]:
     """Run a command, capture everything, never raise."""
     try:
         proc = subprocess.run(command, capture_output=True, text=True,
                               encoding="utf-8", errors="replace",
-                              timeout=timeout, check=False,
+                              timeout=timeout, check=False, cwd=cwd,
                               creationflags=NO_WINDOW)
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except FileNotFoundError:
@@ -508,7 +516,7 @@ def ensure_database(report: Report, install: bool, password: str) -> bool:
 def _apply_migrations(report: Report) -> None:
     started = time.monotonic()
     code, out = _run([sys.executable, "-m", "alembic", "upgrade", "head"],
-                     timeout=600)
+                     timeout=600, cwd=PROJECT_ROOT)
     applied = [ln for ln in out.splitlines() if "Running upgrade" in ln]
     if code == 0:
         report.add(Step("Migrations",

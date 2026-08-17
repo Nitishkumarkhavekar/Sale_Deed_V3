@@ -203,10 +203,55 @@ class BatchRunner:
         Anything left RUNNING means the process died holding it. Returning those
         to PENDING makes them claimable again; safe because every stage is
         idempotent.
+
+        Batches caught mid-stop are settled here too, and the order matters:
+        documents are released *first*, so `settle_stopping` then sees zero in
+        flight and completes the stop. Reversed, a batch killed during a stop
+        would stay in `STOPPING` - a state with no exit and no Run button -
+        until someone edited the database by hand.
         """
         with session_scope(self.session_factory) as session:
             uow = UnitOfWork(session)
-            return uow.documents.reset_running_to_pending()
+            released = uow.documents.reset_running_to_pending()
+            settled = uow.batches.settle_stopping()
+        if settled:
+            log.info("settled %d batch(es) left mid-stop by a restart",
+                     len(settled), extra={"batches": settled})
+        self._fail_stranded()
+        return released
+
+    def _fail_stranded(self, batch_id: int | None = None) -> int:
+        """Give a terminal state to documents nothing can ever claim.
+
+        The backstop for the condition described on `reset_running_to_pending`:
+        a stage at PENDING with the retry cap already exceeded is unclaimable,
+        but `overall_state` is still PROCESSING, so `is_finished` is false for
+        ever and the batch holds `RUNNING` - and every queued batch waits behind
+        it indefinitely. Marking these FAILED is what they already are in fact;
+        it just says so, so the queue can move and the operator can see them on
+        the Failed OCR page and retry them deliberately.
+        """
+        limits = {"ocr": self.ocr_retry_limit, "extract": self.extract_retry_limit}
+        failed = 0
+        with session_scope(self.session_factory) as session:
+            uow = UnitOfWork(session)
+            for doc_pk, stage in uow.documents.stranded(limits, batch_id):
+                doc = uow.documents.get(doc_pk)
+                if doc is None:
+                    continue
+                reason = (f"{stage} gave up after "
+                          f"{getattr(doc, f'{stage}_attempts', 0)} attempts")
+                uow.documents.mark_stage(doc, stage, StageState.FAILED,
+                                         reason=reason,
+                                         processing_status="OCR_F"
+                                         if stage == "ocr" else None)
+                self._append_failure(uow, doc, stage, reason, None)
+                failed += 1
+        if failed:
+            log.warning("%d document(s) had exhausted their retries while still "
+                        "marked in-progress; failed them so the batch can finish",
+                        failed, extra={"documents": failed, "batch": batch_id})
+        return failed
 
     def start(self) -> None:
         """Begin processing. Resumes from PAUSED without losing progress."""
@@ -265,12 +310,30 @@ class BatchRunner:
 
     # -- main loop --------------------------------------------------------
 
+    def _idle(self, seconds: float) -> None:
+        """Wait, and mean it.
+
+        `_wake` is set by `start` and `stop` to interrupt an idle worker
+        promptly. Nothing ever cleared it, so once `start` had run every
+        `_wake.wait(timeout=...)` in this loop returned immediately and all
+        three idle paths became busy-waits: an application with nothing to do
+        re-ran the claim query - a locking `SELECT ... FOR UPDATE` per worker -
+        as fast as the database would answer, for as long as it was open.
+
+        Clearing the flag after the wait restores the intended behaviour. Order
+        matters: cleared *before* waiting, a `set` racing in between would be
+        swallowed and the worker would sleep through a start it was meant to
+        react to.
+        """
+        self._wake.wait(timeout=seconds)
+        self._wake.clear()
+
     def _loop(self) -> None:
         idle_sleep = 1.0
         while not self._stop.is_set():
             if self._pause.is_set():
                 self._set_state(RunnerState.PAUSED, "paused")
-                self._wake.wait(timeout=1.0)
+                self._idle(1.0)
                 continue
 
             if self.governor is not None:
@@ -285,19 +348,43 @@ class BatchRunner:
             batch_id = self._ensure_active_batch()
             if batch_id is None:
                 self._set_state(RunnerState.RUNNING, "no batch queued")
-                self._wake.wait(timeout=idle_sleep)
+                self._idle(idle_sleep)
                 continue
 
             if not self._process_one(batch_id):
-                # Nothing claimable in this batch: either finished or all
-                # remaining documents are held by other workers.
+                # Nothing claimable in this batch: either finished, or every
+                # remaining document is held by another worker - or none of
+                # them can ever be claimed again. The last case is the one that
+                # used to wedge the queue permanently, so it is checked here as
+                # well as at startup: this is the only moment the runner can
+                # observe "a RUNNING batch with no claimable work".
+                if self._fail_stranded(batch_id):
+                    continue  # something changed; re-evaluate immediately
                 self._finalise_if_complete(batch_id)
-                self._wake.wait(timeout=idle_sleep)
+                self._idle(idle_sleep)
 
     def _ensure_active_batch(self) -> int | None:
-        """Return the running batch, promoting a queued one if needed."""
+        """Return the running batch, promoting a queued one if needed.
+
+        Also the point where a stop takes effect. A batch asked to stop leaves
+        `RUNNING`, so it stops being returned here and no further document is
+        claimed from it; the worker still inside one finishes and releases it,
+        and the next pass through settles the batch to `STOPPED`. Nothing is
+        interrupted and nothing is lost.
+
+        Because the stop is recorded on the batch row rather than on the runner,
+        stopping one batch leaves every other batch - and the runner itself -
+        untouched: the queue simply advances to the next one.
+        """
         with session_scope(self.session_factory) as session:
             uow = UnitOfWork(session)
+            for stopped_id in uow.batches.settle_stopping():
+                log.info("batch stopped; in-flight work finished cleanly",
+                         extra={"batch": stopped_id})
+                if self._current_batch_id == stopped_id:
+                    self._current_batch_id = None
+                    self._detail = f"stopped batch {stopped_id}"
+
             active = uow.batches.active()
             if active is not None:
                 self._current_batch_id = active.id

@@ -32,6 +32,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: `alembic.ini` sits beside the five top-level folders, not inside `src`, and
+#: its `script_location` is written relative to itself. Alembic must therefore be
+#: launched from the project root - run from `src` it reports "No 'script_location'
+#: key found in configuration" and exits non-zero, which is exactly what every
+#: --upgrade path here did until this was noticed while adding a migration.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.db.engine import (  # noqa: E402
@@ -124,7 +131,7 @@ def cmd_upgrade() -> bool:
     print("Running alembic upgrade head")
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=PROJECT_ROOT, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=300, check=False)
     tail = (result.stderr or result.stdout or "").strip().splitlines()
     for line in tail[-6:]:

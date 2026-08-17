@@ -89,6 +89,10 @@ def state_badge(state: str) -> str:
         "completed": "ok", "processed": "ok",
         "running": "accent",
         "needs_review": "review", "paused": "review",
+        # A stopped batch is not a failed one - it is healthy and resumable, so
+        # it must not wear the red badge that means "something went wrong".
+        # `stopping` is transitional and reads as in-progress.
+        "stopping": "accent", "stopped": "review",
         "failed": "danger",
     }.get(state, "")
 
@@ -241,7 +245,7 @@ class Renderer:
 def dashboard_model(
     *,
     active: dict[str, Any] | None,
-    queued: list[dict[str, Any]],
+    manage: list[dict[str, Any]],
     completed: list[dict[str, Any]],
     page: int = 1,
     per_page: int = 5,
@@ -287,11 +291,17 @@ def dashboard_model(
             "started_at": local_time(active.get("started_at")),
         }
 
+    # The badge class is decided here rather than in the service, so every
+    # state in the application is coloured by one function; a second mapping
+    # would drift the first time a state was added.
+    for row in (*manage, *completed):
+        row["state_class"] = state_badge(str(row.get("state") or ""))
+
     return {
         "active": active_model,
-        "queued": queued,
-        "has_queued": bool(queued),
-        "queued_count": len(queued),
+        "manage": manage,
+        "has_manage": bool(manage),
+        "queued_count": sum(1 for r in manage if r.get("state") == "queued"),
         "max_queued": max_queued,
         "completed": completed,
         "has_completed": bool(completed),

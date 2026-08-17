@@ -65,11 +65,38 @@ class Base(DeclarativeBase):
 
 
 class BatchState(str, enum.Enum):
+    """Where a batch is in its life.
+
+    `STOPPING` and `STOPPED` are distinct on purpose. An operator who presses
+    Stop needs to see that the request was taken *and* that it has not yet taken
+    effect: the document currently in flight is allowed to finish, which on a
+    46-page deed is several minutes. Collapsing the two would either lie about
+    when work ceased or make Stop look like it did nothing.
+
+    `STOPPED` is a resting state, not a terminal one - a stopped batch keeps
+    every per-document stage result, so Run resumes it where it left off rather
+    than starting over. `PAUSED` predates this and is retained so old rows keep
+    their meaning; the UI treats it exactly like `STOPPED`.
+    """
+
     QUEUED = "queued"
     RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+#: A batch in one of these can be resumed. Kept next to the enum because three
+#: modules ask the same question and a copy that drifts would let the UI offer
+#: an action the service then refuses.
+RESUMABLE_BATCH_STATES = (BatchState.STOPPED, BatchState.PAUSED,
+                          BatchState.FAILED)
+
+#: Work is either running or about to stop; a batch here owns documents that a
+#: worker may be holding, so deletion has to be confirmed and stop has to wait.
+BUSY_BATCH_STATES = (BatchState.RUNNING, BatchState.STOPPING)
 
 
 class StageState(str, enum.Enum):

@@ -34,6 +34,13 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: `alembic.ini` sits beside the five top-level folders, not inside `src`, and
+#: its `script_location` is written relative to itself. Alembic must therefore be
+#: launched from the project root - run from `src` it reports "No 'script_location'
+#: key found in configuration" and exits non-zero, which is exactly what every
+#: --upgrade path here did until this was noticed while adding a migration.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from ai_server.deployment import DeploymentClass, assess  # noqa: E402
@@ -198,7 +205,7 @@ def install_database(password: str = "saledeed") -> bool:
 
     dsn = f"postgresql+psycopg://saledeed:{password}@localhost:5432/saledeed"
     code, output = _run([sys.executable, "-m", "alembic", "upgrade", "head"],
-                        cwd=ROOT, env=dict(os.environ, SALEDEED_DB_URL=dsn))
+                        cwd=PROJECT_ROOT, env=dict(os.environ, SALEDEED_DB_URL=dsn))
     if code != 0:
         _fail(f"migration failed: {output.splitlines()[-1][:160] if output else code}")
         return False

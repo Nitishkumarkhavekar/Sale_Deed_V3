@@ -401,6 +401,66 @@
         return;
       }
 
+      // -- per-batch management -------------------------------------------
+      //
+      // Run needs no confirmation: it is additive and reversible by Stop. The
+      // other two do, and the delete prompt is deliberately worded differently
+      // when the batch is mid-processing, so a reflexive click-through on the
+      // ordinary case cannot silently kill a running job.
+
+      if (d.batchRun) {
+        busy(t, true);
+        call("batch_action", { batch_id: +d.batchRun, action: "run" })
+          .then(function (r) {
+            busy(t, false);
+            toast(r.detail || "Batch queued.", "ok");
+            navigate(currentPage);
+          })
+          .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
+        return;
+      }
+
+      if (d.batchStop) {
+        const stopName = d.batchName || "this batch";
+        if (!confirm("Stop " + stopName + "?\n\nThe document being processed "
+                     + "right now will be allowed to finish, so nothing is "
+                     + "lost. The rest of the queue will not be started.\n\n"
+                     + "You can resume it later from where it stopped.")) return;
+        busy(t, true);
+        call("batch_action", { batch_id: +d.batchStop, action: "stop" })
+          .then(function (r) {
+            busy(t, false);
+            toast(r.detail || "Stop requested.", "ok");
+            navigate(currentPage);
+          })
+          .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
+        return;
+      }
+
+      if (d.batchDelete) {
+        const delName = d.batchName || "this batch";
+        const busyBatch = d.batchBusy === "1";
+        const question = busyBatch
+          ? ("Delete " + delName + " while it is still processing?\n\n"
+             + "It will be stopped first, and the document in flight allowed "
+             + "to finish. Everything extracted so far will be destroyed.\n\n"
+             + "This cannot be undone.")
+          : ("Delete " + delName + " and all of its extracted data?\n\n"
+             + "Source PDFs and any CSVs already exported are kept. This "
+             + "cannot be undone.");
+        if (!confirm(question)) return;
+        busy(t, true);
+        call("batch_action", { batch_id: +d.batchDelete, action: "delete",
+                               confirm: busyBatch })
+          .then(function (r) {
+            busy(t, false);
+            toast(r.detail || "Batch deleted.", "ok");
+            navigate(currentPage);
+          })
+          .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
+        return;
+      }
+
       // The zone says "click to select", so it has to select. Each dropzone
       // opens the dialog its own page owns: the watermark page keeps a separate
       // selection, and routing its zone at the upload picker would stage files
