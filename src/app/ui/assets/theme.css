@@ -59,6 +59,14 @@
 
     --nav-w: 232px;
     --topbar-h: 56px;
+
+    /* The emblem JPEG's own ground, sampled from its four corners. It is not
+       white. Any plate the artwork sits on is painted this colour so the edge
+       of the image cannot be seen - against #fff it showed as a hard-edged
+       grey rectangle floating inside a white badge, which is what made a
+       correctly-proportioned logo look wrong. Deliberately the same in both
+       themes: it is part of the artwork, not part of the palette. */
+    --emblem-ground: #f3f3f3;
     --font: "Noto Sans", "Inter", "Segoe UI", system-ui, sans-serif;
     --mono: "Cascadia Mono", "Consolas", monospace;
 }
@@ -118,10 +126,27 @@ html, body {
 }
 
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
+/* The departmental emblem, at the size a brand mark is read at.
+
+   This was a 28px tricolour gradient square - a placeholder standing in for an
+   emblem the application already ships. The artwork is landscape (535x392), so
+   the box is sized by height and lets the width follow; forcing it square
+   would have squashed the laurel wreath into an oval. 36px in a 56px bar
+   leaves the mark clear of both edges without changing the bar's height. */
 .brand .emblem {
-    width: 28px; height: 28px; border-radius: 6px;
-    background: linear-gradient(160deg, var(--saffron) 0%, #fff 50%, var(--gov-green) 100%);
+    height: 36px; width: auto; flex: 0 0 auto;
+    border-radius: 6px;
+    background: var(--emblem-ground);
     border: 1px solid var(--border-strong);
+    display: flex; align-items: center; justify-content: center;
+    padding: 4px;
+    line-height: 1;
+}
+.brand .emblem img {
+    height: 100%; width: auto;
+    aspect-ratio: 535 / 392;
+    object-fit: contain;
+    display: block;
 }
 .topbar .spacer { flex: 1; }
 
@@ -387,24 +412,49 @@ code, .mono { font-family: var(--mono); font-size: 12px; }
    layout ends up giving the image, the aspect ratio is preserved and the
    remainder is padding, never stretch. */
 .hero .emblem {
-    /* 64px, not the 46px the glyph used. The emblem carries three elements -
-       the lion capital, the laurel wreath and the ribbon naming the department -
-       and at the old size the ribbon lettering was a grey smear. Measured
-       against the artwork: it has essentially no baked-in margin (16px of white
-       at the top of 392), so the rendered size is the emblem's size. */
-    height: 64px; flex: 0 0 auto; border-radius: 10px;
-    background: #fff;
+    /* Scales with the window rather than sitting at a fixed 64px.
+
+       64px was too small to be the departmental emblem. The ribbon reading
+       INCOME TAX DEPARTMENT is 28.8% of the artwork's height, so a 50px content
+       box rendered it about 14px tall and the lettering inside came out as a
+       red smear - which reads as a blurry logo, not a small one.
+
+       The ceiling matters as much as the floor: without it the emblem would go
+       on growing on a wide monitor until it drove the hero taller than its own
+       title block, which is the layout breaking rather than adapting. */
+    height: clamp(72px, 6.5vw, 96px);
+    flex: 0 0 auto;
+    border-radius: 10px;
+    background: var(--emblem-ground);
     border: 2px solid rgba(255, 255, 255, .65);
     box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
     display: flex; align-items: center; justify-content: center;
-    padding: 5px 9px;
+
+    /* Even on all four sides. The artwork bleeds to its own left and right
+       edges - the ribbon tails are cut at x=0 and x=534 - so the clearance the
+       ribbon gets from the rounded corner is entirely this padding. */
+    padding: 6px;
     line-height: 1;
 }
 .hero .emblem img {
-    height: 100%; width: auto; max-width: 120px;
+    /* `contain` is what guarantees no distortion: whatever box the layout ends
+       up giving the image, the ratio is preserved and any remainder is empty
+       space, never stretch. `aspect-ratio` states that ratio to the layout
+       engine before the JPEG has decoded, so the hero is at its final height on
+       the first paint and nothing shifts underneath it.
+
+       No `max-width`: the plate shrink-wraps the image, so a width cap could
+       only ever letterbox the artwork inside its own badge. */
+    height: 100%;
+    width: auto;
+    aspect-ratio: 535 / 392;
     object-fit: contain;
     display: block;
 }
+/* The title block. `min-width: 0` lets it shrink instead of pushing the
+   language pill out of the hero on a narrow window - a flex item's default
+   minimum is its content width, which is what makes long headings overflow. */
+.hero .hero-text { min-width: 0; }
 .hero h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: .01em; }
 .hero .sub { font-size: 12.5px; opacity: .9; margin-top: 2px; }
 .hero .spacer { flex: 1; }

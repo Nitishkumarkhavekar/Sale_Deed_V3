@@ -23,6 +23,20 @@ ASSETS = ROOT / "src" / "app" / "ui" / "assets"
 LOGO = ASSETS / "income-tax-logo.jpg"
 
 
+def rule(css: str, selector: str) -> str:
+    """The declarations of one rule, with comments removed.
+
+    Read properly rather than by slicing the first N characters after the
+    selector: three of these tests used to do that, and all three broke the
+    moment a comment above a declaration grew - reporting a missing
+    `object-fit` that was sitting four lines further down. A guard that fails
+    on prose is a guard people delete.
+    """
+    start = css.index(selector + " {") + len(selector) + 2
+    block = css[start:css.index("}", start)]
+    return re.sub(r"/\*.*?\*/", "", block, flags=re.S)
+
+
 class TestItShipsWithTheApplication:
     def test_the_logo_is_inside_the_package(self):
         """Under `src/`, not beside the project. Anything outside the package
@@ -131,12 +145,27 @@ class TestThePageUsesIt:
         html = app_service.render_page("dashboard", {}, shell_html=True)
         assert 'alt="Income Tax Department"' in html
 
-    def test_it_appears_once_per_page(self, app_service):
-        """In the hero, and nowhere else. The top bar keeps its own compact
-        mark: the emblem's laurel and ribbon are illegible at 28px, and two
-        copies of it would be visible at the same time."""
+    def test_it_appears_exactly_twice(self, app_service):
+        """The top-bar mark and the hero, and nowhere else.
+
+        It used to be once. The top bar carried a tricolour gradient square
+        instead - a placeholder standing in for an emblem the application
+        already shipped, which is what an operator pointed at. Two marks is now
+        the intent, so the count is still pinned: a third copy would mean the
+        logo had leaked into page content, which navigation re-inserts.
+        """
         html = app_service.render_page("dashboard", {}, shell_html=True)
-        assert html.count("income-tax-logo.jpg") == 1
+        assert html.count("income-tax-logo.jpg") == 2
+
+    def test_one_of_them_is_the_top_bar_mark(self, app_service):
+        html = app_service.render_page("dashboard", {}, shell_html=True)
+        brand = html[html.index('class="brand"'):html.index('class="tabs"')]
+        assert "income-tax-logo.jpg" in brand
+
+    def test_the_top_bar_mark_is_no_longer_a_placeholder(self):
+        """The gradient square is gone, not merely covered over."""
+        css = (ASSETS / "theme.css").read_text(encoding="utf-8")
+        assert "linear-gradient" not in rule(css, ".brand .emblem")
 
     def test_it_is_present_on_every_page(self, app_service):
         """It lives in the shell, so navigation cannot lose it."""
@@ -158,12 +187,19 @@ class TestItCannotBeDistorted:
     def _css(self):
         return (ASSETS / "theme.css").read_text(encoding="utf-8")
 
-    def test_the_aspect_ratio_is_preserved(self):
+    @pytest.mark.parametrize("selector",
+                             (".hero .emblem img", ".brand .emblem img"))
+    def test_the_aspect_ratio_is_preserved(self, selector):
         """`object-fit: contain` is the guarantee: whatever box the layout
         gives it, the image letterboxes rather than stretches."""
-        css = self._css()
-        block = css[css.index(".hero .emblem img"):]
-        assert "object-fit: contain" in block[:300]
+        assert "object-fit: contain" in rule(self._css(), selector)
+
+    @pytest.mark.parametrize("selector",
+                             (".hero .emblem img", ".brand .emblem img"))
+    def test_the_ratio_is_known_before_the_image_decodes(self, selector):
+        """Without this the box is zero-width until the JPEG arrives and the
+        text beside it slides sideways on first paint."""
+        assert "aspect-ratio: 535 / 392" in rule(self._css(), selector)
 
     def test_only_one_dimension_is_fixed(self):
         """Setting both width and height in pixels is how a logo gets squashed
@@ -215,9 +251,59 @@ class TestItCannotBeDistorted:
     def test_it_does_not_overlap_the_controls_beside_it(self):
         """The hero is a flex row ending in a spacer and a pill. The plate must
         not grow into them."""
-        css = self._css()
-        block = css[css.index(".hero .emblem {"):]
-        block = block[:block.index("}")]
+        block = rule(self._css(), ".hero .emblem")
         assert "flex: 0 0 auto" in block, "the plate can be stretched by flex"
-        img = css[css.index(".hero .emblem img"):]
-        assert "max-width" in img[:300], "the plate can grow without bound"
+
+    def test_the_hero_plate_is_bounded_at_both_ends(self):
+        """It scales with the window, which is the point - but a plate free to
+        grow would drive the hero taller than its own title block on a wide
+        monitor, and one free to shrink would put the ribbon back to a smear.
+
+        The bound used to be a `max-width` on the image. It is the clamp
+        ceiling now: the plate shrink-wraps the artwork, so a width cap could
+        only letterbox the emblem inside its own badge.
+        """
+        block = rule(self._css(), ".hero .emblem")
+        match = re.search(r"height:\s*clamp\(\s*(\d+)px\s*,[^,]+,\s*(\d+)px\s*\)",
+                          block)
+        assert match, f"the hero plate has no bounded height: {block.strip()}"
+        floor, ceiling = int(match.group(1)), int(match.group(2))
+        assert floor >= 64, "smaller than the size the ribbon was already a smear at"
+        assert ceiling <= 120, "taller than the hero's own title block"
+        assert floor < ceiling
+
+    def test_the_plate_matches_the_artwork_ground(self):
+        """The JPEG is on #f3f3f3, not white. On a white plate its edge showed
+        as a hard grey rectangle inside the badge - a correctly-proportioned
+        logo that looked wrong. Both plates paint the artwork's own ground, so
+        there is no seam to see."""
+        css = self._css()
+        assert "--emblem-ground: #f3f3f3;" in css
+        for selector in (".hero .emblem", ".brand .emblem"):
+            assert "background: var(--emblem-ground)" in rule(css, selector), \
+                selector
+
+    def test_the_ground_is_the_colour_the_artwork_actually_uses(self):
+        """Sampled, not assumed. If the artwork is ever replaced with one on a
+        different ground, the seam comes back and this is what says so."""
+        import pymupdf
+
+        px = pymupdf.Pixmap(str(LOGO))
+        corner = tuple(px.samples[:3])
+        css = (ASSETS / "theme.css").read_text(encoding="utf-8")
+        declared = re.search(r"--emblem-ground:\s*#([0-9a-fA-F]{6});", css)
+        assert declared, "no --emblem-ground declared"
+        want = tuple(int(declared.group(1)[i:i + 2], 16) for i in (0, 2, 4))
+        assert all(abs(a - b) <= 4 for a, b in zip(corner, want)), (
+            f"the artwork's ground is {corner}, the stylesheet paints {want}")
+
+    @pytest.mark.parametrize("selector", (".hero .emblem", ".brand .emblem"))
+    def test_the_padding_is_even_on_every_side(self, selector):
+        """The artwork bleeds to its own left and right edges, so the clearance
+        the ribbon tails get from the rounded corner is entirely this padding.
+        Uneven padding reads as a logo sitting off-centre in its badge."""
+        block = rule(self._css(), selector)
+        match = re.search(r"padding:\s*([^;]+);", block)
+        assert match, f"{selector} declares no padding"
+        values = match.group(1).split()
+        assert len(set(values)) == 1, f"{selector} padding is uneven: {values}"

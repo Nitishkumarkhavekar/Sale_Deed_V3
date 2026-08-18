@@ -14,7 +14,14 @@
 
   <div class="topbar">
     <div class="brand">
-      <span class="emblem"></span>
+      {{! The same emblem the hero carries, on the same plate, so the two marks
+          cannot drift apart. Small enough here that the ribbon lettering is not
+          meant to be read - that is the hero's job; this one has to be
+          recognisable at a glance and not distort. }}
+      <span class="emblem">
+        <img src="app://ui/assets/income-tax-logo.jpg"
+             alt="Income Tax Department" width="535" height="392">
+      </span>
       <span>Sale Deed AI</span>
     </div>
 
@@ -103,7 +110,7 @@
           <img src="app://ui/assets/income-tax-logo.jpg"
                alt="Income Tax Department" width="535" height="392">
         </span>
-        <div>
+        <div class="hero-text">
           <h1>Sale Deed AI</h1>
           <div class="sub">Income Tax Department &middot; Document Processing System</div>
         </div>
