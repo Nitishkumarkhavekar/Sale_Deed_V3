@@ -600,6 +600,21 @@
         return;
       }
 
+      if (t.id === "btn-retranslate") {
+        if (!confirm("Translate stored rows that still hold regional text?\n\n"
+                     + "Only the translated columns are written - the original "
+                     + "text is left exactly as extracted.")) return;
+        busy(t, true);
+        call("retranslate", {})
+          .then(function (r) {
+            busy(t, false);
+            toast(r.detail, r.documents ? "ok" : "info");
+            navigate(currentPage);
+          })
+          .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
+        return;
+      }
+
       if (t.id === "btn-add-batch") { submitBatch(t); return; }
       if (t.id === "btn-clear") {
         call("clear_selection", {}).then(function () { navigate(currentPage); });

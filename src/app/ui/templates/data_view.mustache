@@ -4,6 +4,12 @@
   <button id="btn-refresh">Refresh</button>
   <button class="btn-accent" id="btn-export-view"
           {{#no_export}}disabled title="{{export_reason}}"{{/no_export}}>Download CSV</button>
+  {{! Repairs rows extracted before the translation result was persisted. Those
+      read `translate_state = DONE` and hold no translation, so nothing else
+      will ever revisit them - a rerun would redo OCR and extraction to fix a
+      field neither of them touches. }}
+  <button class="btn-secondary" id="btn-retranslate"
+          title="Translate stored rows that still hold regional text">Re-translate</button>
 </div>
 
 <div class="card tight">

@@ -312,6 +312,14 @@ class Bridge(QObject):
                   payload, request_id)
 
     @Slot(str, str)
+    def retranslate(self, request_id: str, payload: str) -> None:
+        """Repair documents whose stored rows were never translated."""
+        self._run("retranslate",
+                  lambda p: self.service.retranslate(
+                      int(p["batch_id"]) if p.get("batch_id") else None),
+                  payload, request_id)
+
+    @Slot(str, str)
     def batch_action(self, request_id: str, payload: str) -> None:
         """Run, stop or delete one batch.
 

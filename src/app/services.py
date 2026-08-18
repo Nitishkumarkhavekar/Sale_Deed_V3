@@ -810,6 +810,89 @@ class AppService:
         chosen = str(picker(suggested) or "")
         return {"path": chosen, "cancelled": not chosen}
 
+    def retranslate(self, batch_id: int | None = None,
+                    limit: int = 200) -> dict[str, Any]:
+        """Translate documents whose stored rows were never translated.
+
+        Repairs data extracted before the translation result was persisted.
+        Those documents read `translate_state = DONE` and hold NULL
+        translations, so nothing else will ever revisit them - the pipeline has
+        no reason to, and a rerun would redo OCR and extraction to fix a field
+        neither of them touches.
+
+        Only the `*_translated` columns are written. The source text is a legal
+        record and is never replaced: `apply_translations` writes beside it, and
+        a document that turns out to need nothing writes nothing.
+
+        Runs inline. It is minutes of CPU for a batch, not hours, and it holds
+        no GPU - the translator runs on the CPU by design so it never competes
+        with OCR or extraction for the card.
+        """
+        if not self.db_ok:
+            raise RuntimeError(self.db_detail.splitlines()[0])
+
+        with session_scope(self.sessions) as session:
+            pending = [d.id for d in UnitOfWork(session).documents
+                       .needing_translation(batch_id, limit)]
+        if not pending:
+            return {"documents": 0, "fields": 0,
+                    "detail": "Nothing to re-translate - every stored row "
+                              "already has its translation."}
+
+        translated = fields = failed = 0
+        for doc_pk in pending:
+            # Rebuilt from the stored rows rather than from the extraction
+            # JSON: the rows are what the export reads, and they are what has
+            # to end up correct.
+            with session_scope(self.sessions) as session:
+                doc = UnitOfWork(session).documents.get(doc_pk)
+                if doc is None:
+                    continue
+                parsed: dict[str, Any] = {
+                    "seller_details": [], "buyer_details": [],
+                    "property_details": {}, "document_details": {}}
+                for person in sorted(doc.persons, key=lambda p: (p.relation.value,
+                                                                 p.ordinal)):
+                    key = ("buyer_details" if person.relation.value == "B"
+                           else "seller_details")
+                    parsed[key].append({"name": person.name,
+                                        "father_name": person.father_name,
+                                        "address": person.address})
+                if doc.property_ is not None:
+                    parsed["property_details"]["schedule_c_property_address"] = (
+                        doc.property_.schedule_c_address)
+
+            try:
+                outcome = self.stages.translate.run(parsed)
+            except Exception as exc:  # noqa: BLE001 - one document must not
+                # end the repair; the rest are still worth translating.
+                self._record_error("re-translation", exc)
+                failed += 1
+                continue
+            if not outcome.ok:
+                failed += 1
+                continue
+
+            with session_scope(self.sessions) as session:
+                uow = UnitOfWork(session)
+                doc = uow.documents.get(doc_pk)
+                if doc is None:
+                    continue
+                written = uow.results.apply_translations(doc, parsed)
+            if written:
+                translated += 1
+                fields += written
+
+        log.info("re-translated %d document(s), %d field(s), %d failed",
+                 translated, fields, failed,
+                 extra={"documents": translated, "fields": fields})
+        return {"documents": translated, "fields": fields, "failed": failed,
+                "considered": len(pending),
+                "detail": (f"Re-translated {translated} document(s), "
+                           f"{fields} field(s)."
+                           + (f" {failed} could not be translated."
+                              if failed else ""))}
+
     def reprocess_failed(self, batch_id: int) -> dict[str, Any]:
         """Requeue a batch's failed documents.
 

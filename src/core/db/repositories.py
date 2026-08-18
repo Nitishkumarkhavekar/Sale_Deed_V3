@@ -434,6 +434,29 @@ class BatchRepository(_Base):
 
 
 class DocumentRepository(_Base):
+    def needing_translation(self, batch_id: int | None = None,
+                            limit: int = 500) -> list[Document]:
+        """Documents whose stored rows still hold untranslated text.
+
+        Found by looking at the *rows*, not at `translate_state`: a document
+        processed before the translation was persisted reads DONE and has NULL
+        translations, which is exactly the population this exists to find.
+
+        A person row counts when it has a name but no translated name. That is
+        deliberately cheap - a full script check per row would mean loading and
+        testing every string in the database to answer "is there work to do".
+        The translation service skips anything already in English, so a document
+        selected here that turns out to need nothing simply writes nothing.
+        """
+        stmt = (select(Document)
+                .join(Person, Person.document_id == Document.id)
+                .where(Person.name.is_not(None),
+                       Person.name_translated.is_(None))
+                .distinct())
+        if batch_id is not None:
+            stmt = stmt.where(Document.batch_id == batch_id)
+        return list(self.session.scalars(stmt.limit(limit)))
+
     def add_many(self, batch: Batch, entries: Iterable[dict[str, Any]]) -> list[Document]:
         """Register a batch's documents. Duplicate document_ids are skipped.
 
@@ -956,8 +979,14 @@ class ResultRepository(_Base):
                         written += 1
 
         prop = doc.property_
+        # `schedule_c_property_address` is the schema's name for it - the key
+        # the prompt defines, the key the translate stage writes
+        # `<key>_translated` beside, and the key the exporter reads. The column
+        # it lands in is `Property.address_translated`. Reading plain
+        # "address_translated" here matched nothing, so the property address was
+        # silently never repaired even though the person fields were.
         address = (extraction.get("property_details") or {}).get(
-            "address_translated")
+            "schedule_c_property_address_translated")
         if prop is not None and address and prop.address_translated != address:
             prop.address_translated = address
             written += 1

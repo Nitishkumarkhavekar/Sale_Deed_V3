@@ -400,7 +400,7 @@ class TestTheTranslationIsPersisted:
                                 "father_name": "ಕೆ. ನರಸಿಂಹಪ್ಪ",
                                 "address": "ನಾಗರಭಾವಿ, ಬೆಂಗಳೂರು"}],
             "buyer_details": [{"name": "ಜಿ. ಸಿ. ಸೋಮಣ್ಣ"}],
-            "property_details": {"address": "ರಾಮನಗರ ಜಿಲ್ಲೆ"},
+            "property_details": {"schedule_c_property_address": "ರಾಮನಗರ ಜಿಲ್ಲೆ"},
             "document_details": {},
         }
         with session_scope(session_factory) as session:
@@ -497,7 +497,11 @@ class TestTheTranslationIsPersisted:
         from core.db.repositories import UnitOfWork
 
         doc_pk, extraction = document
-        extraction["property_details"]["address_translated"] = "Ramanagara District"
+        # The schema's key, not a plain "address": the prompt defines
+        # `schedule_c_property_address`, so the stage writes
+        # `schedule_c_property_address_translated` beside it.
+        extraction["property_details"][
+            "schedule_c_property_address_translated"] = "Ramanagara District"
         with session_scope(session_factory) as session:
             uow = UnitOfWork(session)
             uow.results.apply_translations(session.get(Document, doc_pk),
@@ -519,3 +523,113 @@ class TestTheTranslationIsPersisted:
             "the runner marks translate DONE without saving what it produced")
         assert body.index("apply_translations") < body.index("StageState.DONE"), \
             "the result must be saved before the stage is marked done"
+
+
+@pytest.mark.integration
+class TestReTranslatingOldRecords:
+    """Repairing data extracted before the translation was persisted.
+
+    Those documents read `translate_state = DONE` and hold NULL translations, so
+    nothing in the pipeline will ever revisit them: a rerun would redo OCR and
+    extraction to fix a field neither of them touches.
+    """
+
+    def _seed(self, session_factory, temp_batch):
+        from core.db.engine import session_scope
+        from core.db.models import StageState
+        from core.db.repositories import UnitOfWork
+
+        extraction = {
+            "seller_details": [{"name": "ಹೆಚ್. ಕೃಷ್ಣಮೂರ್ತಿ"}],
+            "buyer_details": [{"name": "ಜಿ. ಸಿ. ಸೋಮಣ್ಣ"}],
+            "property_details": {"schedule_c_property_address": "ರಾಮನಗರ ಜಿಲ್ಲೆ"},
+            "document_details": {},
+        }
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            doc = uow.documents.list_for_batch(temp_batch, per_page=1)[0][0]
+            uow.results.save_property(doc, extraction["property_details"])
+            uow.results.replace_persons(doc, extraction)
+            uow.documents.mark_stage(doc, "translate", StageState.DONE)
+            return doc.id
+
+    def test_the_finder_selects_rows_with_no_translation(self, session_factory,
+                                                         temp_batch):
+        from core.db.engine import session_scope
+        from core.db.repositories import UnitOfWork
+
+        doc_pk = self._seed(session_factory, temp_batch)
+        with session_scope(session_factory) as session:
+            found = UnitOfWork(session).documents.needing_translation(temp_batch)
+        assert doc_pk in [d.id for d in found]
+
+    def test_the_finder_ignores_rows_already_translated(self, session_factory,
+                                                        temp_batch):
+        """Otherwise a repair would re-translate the whole database every run."""
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        doc_pk = self._seed(session_factory, temp_batch)
+        with session_scope(session_factory) as session:
+            for person in session.get(Document, doc_pk).persons:
+                person.name_translated = "already done"
+        with session_scope(session_factory) as session:
+            found = UnitOfWork(session).documents.needing_translation(temp_batch)
+        assert doc_pk not in [d.id for d in found]
+
+    def test_the_finder_can_be_scoped_to_one_batch(self, session_factory,
+                                                   temp_batch):
+        from core.db.engine import session_scope
+        from core.db.repositories import UnitOfWork
+
+        self._seed(session_factory, temp_batch)
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            assert all(d.batch_id == temp_batch
+                       for d in uow.documents.needing_translation(temp_batch))
+
+    def test_the_property_address_uses_the_schema_key(self, session_factory,
+                                                      temp_batch):
+        """`schedule_c_property_address` is what the prompt defines, what the
+        stage writes `_translated` beside, and what the exporter reads. An
+        earlier version of this repair looked for plain "address_translated",
+        matched nothing, and silently left every property address untouched
+        while the person fields were repaired."""
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        doc_pk = self._seed(session_factory, temp_batch)
+        extraction = {
+            "seller_details": [], "buyer_details": [],
+            "property_details": {
+                "schedule_c_property_address_translated": "Ramanagara District"},
+            "document_details": {},
+        }
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            written = uow.results.apply_translations(
+                session.get(Document, doc_pk), extraction)
+        assert written == 1
+        with session_scope(session_factory) as session:
+            assert session.get(Document, doc_pk).property_.address_translated \
+                == "Ramanagara District"
+
+    def test_the_repair_is_reachable_from_the_interface(self):
+        """A repair nobody can run is not a repair."""
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        bridge = (root / "src" / "app" / "ui" / "bridge.py").read_text(
+            encoding="utf-8")
+        assert "def retranslate" in bridge
+        js = (root / "src" / "app" / "ui" / "assets" / "app.js").read_text(
+            encoding="utf-8")
+        assert 'call("retranslate"' in js
+        template = (root / "src" / "app" / "ui" / "templates"
+                    / "data_view.mustache").read_text(encoding="utf-8")
+        assert 'id="btn-retranslate"' in template
+        ast.parse((root / "src" / "app" / "services.py").read_text(
+            encoding="utf-8"))
