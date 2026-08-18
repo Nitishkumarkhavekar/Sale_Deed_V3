@@ -1118,7 +1118,11 @@ def build_rows(documents: list[DocumentExport], *,
                     person, relation, share,
                     _person_remarks(doc, relation, ordinal), excel_safe,
                     property_city=base.get("City / Town", "")))
-                row.update({k: v for k, v in doc.extras.items() if k in CSV_COLUMNS})
+                # `extras` is a caller-supplied override, and the Transaction
+                # Identity is not overridable: a deed that carries a
+                # registration number must show it in every one of its rows.
+                row.update({k: v for k, v in doc.extras.items()
+                            if k in CSV_COLUMNS and k != "Transaction Identity"})
                 rows.append(row)
                 emitted += 1
 

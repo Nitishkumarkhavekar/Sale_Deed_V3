@@ -226,6 +226,27 @@ def _score(candidates: list[Candidate], text: str) -> None:
         candidate.score += 1.0 * (1.0 - candidate.position / last_position)
 
 
+
+#: Pages worth re-reading when the text layer yielded no identity.
+#:
+#: Kaveri stamps its registration certificate - the block reproduced under
+#: `LABELS` - as a scanned image, and it lands either on the front of the
+#: scan or at the back, after the schedule. The body of the deed never
+#: carries the number on its own. Re-OCRing a 20-page deed to read a box on
+#: page 1 costs twenty minutes of GPU time for nineteen pages of recitals.
+IDENTITY_PAGE_DEPTH = 2
+
+
+def identity_pages(page_count: int, depth: int = IDENTITY_PAGE_DEPTH) -> list[int]:
+    """1-based page numbers to re-read, front and back, without duplicates."""
+    if page_count <= 0:
+        return []
+    if page_count <= 2 * depth:
+        return list(range(1, page_count + 1))
+    front = list(range(1, depth + 1))
+    back = list(range(page_count - depth + 1, page_count + 1))
+    return front + back
+
 def from_source_name(source: str) -> str:
     """A registration number taken from the file name, or empty.
 

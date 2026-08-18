@@ -60,6 +60,7 @@ class Flag(str, Enum):
     NAME_NOT_IN_OCR = "WNM"     # name not locatable in OCR
     SCHEMA_INVALID = "SCH"      # missing or malformed top-level keys
     TRUNCATED = "TRC"           # generation hit the token ceiling
+    NO_TXN_IDENTITY = "WTI"     # registration number not readable on the deed
 
 
 @dataclass(frozen=True)

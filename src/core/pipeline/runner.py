@@ -40,6 +40,7 @@ from ..db.engine import session_scope
 from ..db.models import Batch, BatchState, Document, DocumentState, StageState
 from ..db.repositories import UnitOfWork
 from ..transaction_id import extract as extract_transaction_id
+from ..transaction_id import identity_pages
 
 #: Cleaned copies live here. Beside the exports rather than beside the
 #: originals: the source directory is the user's, and writing into it
@@ -486,10 +487,30 @@ class BatchRunner:
         disposition = self._do_validate(doc_pk, parsed, ocr_text)
         self._do_translate(doc_pk, parsed)
 
+        # A deed whose registration number could not be read goes to review,
+        # however sound the rest of it is. The Transaction Identity is what the
+        # receiving system keys the transaction on, so a blank there is not a
+        # missing detail - it is a report that cannot be tied to a deed.
+        #
+        # Review rather than a guess: the extractor already refuses to choose
+        # between two candidates, because writing a previous owner's document
+        # number would be worse than an empty cell. This makes that refusal
+        # visible instead of leaving it to be noticed in a spreadsheet.
+        reason = None
+        if not self._has_identity(doc_pk):
+            disposition = "review"
+            reason = ("the registration number could not be read from this "
+                      "deed - check it before the export is filed")
+
         final = (DocumentState.PROCESSED if disposition == "accept"
                  else DocumentState.NEEDS_REVIEW)
-        self._finish(doc_pk, final, started)
+        self._finish(doc_pk, final, started, reason)
         return True
+
+    def _has_identity(self, doc_pk: int) -> bool:
+        with session_scope(self.session_factory) as session:
+            doc = UnitOfWork(session).documents.get(doc_pk)
+            return bool(doc is not None and doc.transaction_identity)
 
     @staticmethod
     def _append_failure(uow: UnitOfWork, doc: Document, stage: str,
@@ -695,10 +716,19 @@ class BatchRunner:
             # Done here, immediately after OCR, because it needs only the text
             # and every later stage benefits from the document being correctly
             # identified in the logs.
+            ocr_used = self.stages.ocr.engine != "textlayer"
             identity = extract_transaction_id(
                 outcome.data.get("text") or "",
                 source=doc.source_filename,
-                ocr_used=self.stages.ocr.engine != "textlayer")
+                ocr_used=ocr_used)
+            if not identity.found and not ocr_used:
+                # The embedded text layer carried no registration number. That
+                # is not the same as the deed not having one: Kaveri pastes its
+                # certificate on as an image, so on an otherwise-digital deed
+                # the number is the one thing PyMuPDF cannot see. Read the few
+                # pages it could be on through the OCR engine and look again.
+                identity = self._identity_from_ocr(pdf_path, doc.source_filename,
+                                                   doc.page_count, identity)
             # Written to its own column, never over `document_id`. That field is
             # the internal handle, seeded from the file name so the row can exist
             # before anything is read; overwriting it made the two impossible to
@@ -716,6 +746,30 @@ class BatchRunner:
         # not hold a connection open for the length of a save.
         self._make_searchable(pdf_path, outcome.data.get("lines") or [])
         return text
+
+    def _identity_from_ocr(self, pdf_path: str, source: str,
+                           page_count: int | None, current):
+        """Second attempt at the registration number, through OCR.
+
+        Runs only when the first read came from the embedded text layer, and
+        only over the pages the certificate is actually on. Returns `current`
+        unchanged if the re-read finds nothing, so the caller's behaviour when
+        the number genuinely is not there does not change.
+        """
+        pages = identity_pages(page_count or 0)
+        if not pages:
+            return current
+        text = self.stages.ocr.ocr_pages(pdf_path, pages)
+        if not text.strip():
+            return current
+        recovered = extract_transaction_id(text, source=source, ocr_used=True)
+        if not recovered.found:
+            return current
+        log.info("transaction identity %s recovered by OCR", recovered.value,
+                 extra={"source": source, "pages": pages,
+                        "value": recovered.value,
+                        "confidence": round(recovered.confidence, 2)})
+        return recovered
 
     def _make_searchable(self, pdf_path: str, lines: list) -> None:
         """Give scanned pages an invisible text layer, so the deed is selectable.

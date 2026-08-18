@@ -208,6 +208,80 @@ class OcrStage:
             lines=lines,
             duration_s=round(time.monotonic() - started, 2))
 
+    def ocr_pages(self, pdf_path: str | Path, pages: list[int]) -> str:
+        """OCR a named handful of pages and return their text. Never raises.
+
+        A second, cheap read for one specific purpose: recovering the
+        registration number when the embedded text layer did not carry it.
+        Kaveri pastes its registration certificate onto the scan as an image,
+        so a deed that is otherwise digital text can be missing the one field
+        that identifies it - and `_run_textlayer` returns nothing for a picture.
+
+        Only the pages asked for are rendered, because the alternative is
+        re-reading the whole deed through the GPU model to find a box on page
+        one. Returns "" for anything that goes wrong, including "this build has
+        no real OCR engine": the caller's document is already extractable and
+        must not fail over a recovery attempt that could not be made.
+        """
+        path = Path(pdf_path)
+        if not pages or not path.is_file():
+            return ""
+        if not self.surya_python or not self.surya_script:
+            return ""
+        if not (self.surya_python.is_file() and self.surya_script.is_file()):
+            return ""
+
+        try:
+            import pymupdf
+        except ImportError:
+            return ""
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="saledeed_identity_") as tmp:
+                shots = Path(tmp) / "pages"
+                shots.mkdir()
+                rendered = 0
+                with pymupdf.open(path) as doc:
+                    for number in pages:
+                        if not 1 <= number <= doc.page_count:
+                            continue
+                        pixmap = doc[number - 1].get_pixmap(dpi=self.dpi)
+                        # Zero-padded so the runner's sorted glob keeps them in
+                        # page order; it reads *.png by name, not by mtime.
+                        pixmap.save(shots / f"{number:04d}.png")
+                        rendered += 1
+                if not rendered:
+                    return ""
+
+                out_path = Path(tmp) / "ocr.txt"
+                result = subprocess.run(
+                    [str(self.surya_python), str(self.surya_script),
+                     "--images", str(shots),
+                     "--out", str(out_path),
+                     "--langs", ",".join(self.languages),
+                     "--device", self.device,
+                     "--json"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=self.timeout_s, check=False)
+
+                if result.returncode != 0 or not out_path.is_file():
+                    _log.info("identity re-read produced nothing", extra={
+                        "path": str(path), "pages": pages,
+                        "exit": result.returncode,
+                        "detail": (result.stderr or "").strip()[:200]})
+                    return ""
+
+                raw = out_path.read_text(encoding="utf-8")
+                try:
+                    return json.loads(raw).get("text", "")
+                except (ValueError, TypeError):
+                    return raw
+        except Exception as exc:  # noqa: BLE001 - a recovery must not fail a document
+            _log.info("identity re-read could not run", extra={
+                "path": str(path), "pages": pages,
+                "error": f"{type(exc).__name__}: {exc}"})
+            return ""
+
     def _run_textlayer(self, path: Path) -> tuple[str, int]:
         import pymupdf
 
