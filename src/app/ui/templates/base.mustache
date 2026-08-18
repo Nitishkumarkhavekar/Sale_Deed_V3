@@ -85,7 +85,24 @@
         banner scroll with the page - as in the reference - and still survive. }}
     <main class="content">
       <div class="hero">
-        <span class="emblem">&#9878;</span>
+        {{! The departmental emblem, on a white plate.
+
+            The artwork is a JPEG with a white ground, so it cannot sit
+            directly on the purple gradient - it would show as a pale rectangle
+            with hard edges. The plate makes that ground deliberate and reads
+            as a badge, which is how the emblem appears on departmental
+            stationery anyway.
+
+            Served from the assets directory over the custom scheme, the same
+            origin as the stylesheet, so it resolves wherever the application is
+            installed. The URL is not written out again here: a guard in
+            test_platform resolves every scheme URL in this file against the
+            handler's own path arithmetic, and one inside a comment would be
+            checked as though it were a real reference. }}
+        <span class="emblem">
+          <img src="app://ui/assets/income-tax-logo.jpg"
+               alt="Income Tax Department" width="535" height="392">
+        </span>
         <div>
           <h1>Sale Deed AI</h1>
           <div class="sub">Income Tax Department &middot; Document Processing System</div>

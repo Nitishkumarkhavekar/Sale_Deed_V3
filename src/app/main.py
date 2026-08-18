@@ -18,6 +18,7 @@ scheme keeps the CSS, JS and rendered HTML in one origin.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -37,7 +38,7 @@ from PySide6.QtCore import (  # noqa: E402
     QUrl,
     Slot,
 )
-from PySide6.QtGui import QDesktopServices  # noqa: E402
+from PySide6.QtGui import QDesktopServices, QIcon  # noqa: E402
 from PySide6.QtWebChannel import QWebChannel  # noqa: E402
 from PySide6.QtWebEngineCore import (  # noqa: E402
     QWebEngineProfile,
@@ -58,10 +59,20 @@ from app.services import APP_VERSION, AppService  # noqa: E402
 from core import logging_setup  # noqa: E402
 from app.ui.bridge import Bridge  # noqa: E402
 
+log = logging.getLogger("saledeed.app")
+
 SCHEME = b"app"
 MIME = {".css": b"text/css", ".js": b"application/javascript",
         ".png": b"image/png", ".svg": b"image/svg+xml",
+        ".jpg": b"image/jpeg", ".jpeg": b"image/jpeg",
+        ".ico": b"image/vnd.microsoft.icon",
         ".woff2": b"font/woff2", ".html": b"text/html"}
+
+#: The departmental emblem, served to the page and used as the window icon.
+#: Named here rather than spelled out at each use so the two cannot diverge -
+#: a renamed file that still loaded in one place and silently 404'd in the
+#: other would be easy to miss.
+LOGO_FILE = "income-tax-logo.jpg"
 
 
 class AssetHandler(QWebEngineUrlSchemeHandler):
@@ -146,6 +157,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Sale Deed AI  {APP_VERSION}")
         self.resize(1440, 900)
         self.setMinimumSize(1100, 700)
+
+        # The departmental emblem as the window, taskbar and Alt-Tab icon.
+        # Resolved from this file's own location, never from a fixed drive, so
+        # it is found wherever the application is installed. A missing file is
+        # not worth failing a launch over - Qt's default icon is a cosmetic
+        # loss, not a broken application - so it is checked rather than trusted.
+        icon_path = Path(__file__).resolve().parent / "ui" / "assets" / LOGO_FILE
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        else:
+            log.warning("window icon missing: %s", icon_path)
 
         self.view = QWebEngineView(self)
         self.setCentralWidget(self.view)
