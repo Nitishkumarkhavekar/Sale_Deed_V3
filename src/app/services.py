@@ -811,13 +811,30 @@ class AppService:
         return {"path": chosen, "cancelled": not chosen}
 
     def reprocess_failed(self, batch_id: int) -> dict[str, Any]:
+        """Requeue a batch's failed documents.
+
+        A batch that does not exist is refused rather than reported as zero
+        requeued. The dashboard refreshes on a timer and two windows can be
+        open, so pressing this on a row for a batch someone has just deleted is
+        an ordinary occurrence - and "Requeued 0 document(s)" reads as success.
+        Delete and the Run/Stop actions already say "Batch N not found" for the
+        same stale row; this said nothing at all.
+        """
         with session_scope(self.sessions) as session:
             uow = UnitOfWork(session)
-            count = uow.documents.reprocess_failed(batch_id)
             batch = uow.batches.get(batch_id)
-            if batch is not None and count:
+            if batch is None:
+                raise RepositoryError(f"Batch {batch_id} not found.")
+            name = batch.name
+            count = uow.documents.reprocess_failed(batch_id)
+            if count:
                 uow.batches.set_state(batch, BatchState.QUEUED)
-        return {"count": count}
+        # Zero is not an error - the failures may have been requeued already by
+        # another window - but it must not look like work was done.
+        return {"count": count,
+                "detail": (f"Requeued {count} document(s) from {name!r}."
+                           if count else
+                           f"{name!r} has no failed documents to requeue.")}
 
     # -- failed OCR --------------------------------------------------------
     #

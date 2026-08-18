@@ -254,17 +254,55 @@ def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:
         session.close()
 
 
+#: What the commonest connection failures mean, in words. The first line of
+#: this detail is what the dashboard prints under "Database unreachable", and it
+#: used to read
+#:
+#:     OperationalError: (psycopg.errors.ConnectionTimeout) connection timeout expired
+#:
+#: which names the exception class rather than the thing to do about it. Every
+#: one of these has a different remedy, and PostgreSQL not being started is the
+#: single most common problem on a new installation.
+_CONNECTION_REASONS: tuple[tuple[str, str], ...] = (
+    ("password authentication failed",
+     "The database rejected the username or password."),
+    ("does not exist",
+     "The database or role named in the connection settings does not exist."),
+    ("ConnectionTimeout|timeout expired",
+     "The database did not answer in time. It is usually not running, or a "
+     "firewall is blocking the port."),
+    ("Connection refused|actively refused|could not connect to server",
+     "Nothing is listening on the database port. The PostgreSQL service is "
+     "probably not started."),
+    ("could not translate host name|Name or service not known|getaddrinfo",
+     "The database host name could not be resolved."),
+    ("too many clients",
+     "The database is refusing new connections - its connection limit is full."),
+)
+
+
 def check_connection(engine: Engine) -> tuple[bool, str]:
-    """Probe the server. Returns (ok, detail); never raises."""
+    """Probe the server. Returns (ok, detail); never raises.
+
+    The detail's **first line** is operator-facing: it is printed verbatim in
+    the interface. The driver's own text follows on later lines, where it is
+    available for a support question without being the headline.
+    """
     try:
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version()")).scalar_one()
         return True, str(version)
     except Exception as exc:  # noqa: BLE001 - a probe must not propagate
+        raw = f"{type(exc).__name__}: {exc}"
+        reason = next(
+            (message for pattern, message in _CONNECTION_REASONS
+             if re.search(pattern, raw, re.IGNORECASE)),
+            "The database could not be reached.")
         return False, (
-            f"{type(exc).__name__}: {exc}\n"
+            f"{reason}\n"
             "psycopg is a client driver and cannot store data by itself - a "
-            "PostgreSQL server must be running and reachable at the configured DSN."
+            "PostgreSQL server must be running and reachable at the configured "
+            f"DSN.\n{raw}"
         )
 
 

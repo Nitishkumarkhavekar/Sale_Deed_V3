@@ -112,7 +112,7 @@ _PATTERNS: tuple[tuple[str, str], ...] = (
      # this deed". The one condition an operator can actually act on was the
      # one being described in the vaguest terms.
      r"|AI server (unreachable|is still loading|is up but not admitting"
-     r"|refused work)"
+     r"|refused work|did not finish the job)"
      # 5xx only. A 4xx is the request's fault, not the server's, and calling it
      # "unavailable" would send an operator to restart a healthy service.
      r"|AI server HTTP 5\d\d",
@@ -126,7 +126,13 @@ _PATTERNS: tuple[tuple[str, str], ...] = (
     (r"corrupt|structure is invalid|cannot be opened|PdfiumError|FileDataError",
      PDF_CORRUPTED),
     (r"not a valid PDF|does not begin with a PDF header|invalid header", PDF_INVALID),
-    (r"empty \(0 bytes\)|contains no pages|zero pages", PDF_EMPTY),
+    # `EmptyFileError` / "Cannot open empty file" is PyMuPDF's wording for a
+    # zero-byte file, which the OCR stage hits when a file is emptied after
+    # upload - a copy interrupted, a sync client mid-write. The validator
+    # already answered EMPTY_PDF for the same file while OCR's own message fell
+    # through to "an unrecognised reason", so one document had two stories.
+    (r"empty \(0 bytes\)|contains no pages|zero pages"
+     r"|EmptyFileError|[Cc]annot open empty file", PDF_EMPTY),
     (r"no usable text|produced no text|no text layer", OCR_NO_TEXT),
     (r"only \d+ characters across|pure scan|insufficient text",
      OCR_INSUFFICIENT_TEXT),

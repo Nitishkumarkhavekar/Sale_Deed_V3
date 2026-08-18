@@ -415,7 +415,16 @@
         if (!confirm("Requeue every failed document in this batch?")) return;
         busy(t, true);
         call("reprocess", { batch_id: +d.reprocessBatch })
-          .then(function (r) { busy(t, false); toast("Requeued " + r.count + " document(s).", "ok"); navigate(currentPage); })
+          .then(function (r) {
+            busy(t, false);
+            // The service's wording, which distinguishes "requeued 3" from
+            // "there was nothing to requeue" - the second is not a failure but
+            // it is not a success either, and "Requeued 0 document(s)" read as
+            // one.
+            toast(r.detail || ("Requeued " + r.count + " document(s)."),
+                  r.count ? "ok" : "warn");
+            navigate(currentPage);
+          })
           .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
         return;
       }

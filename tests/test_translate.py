@@ -373,3 +373,149 @@ class TestTranslationLogging:
         # produces silent garbage rather than an error.
         assert out.data["source_language"] == "kan_Knda"
         assert out.data["engine"] in ("unavailable", "failed", "nllb")
+
+
+@pytest.mark.integration
+class TestTheTranslationIsPersisted:
+    """The stage's output has to reach the database, or it never happened.
+
+    Found by exporting a real batch and noticing Kannada in columns meant to
+    hold English on a document whose `translate` stage read DONE. The cause is
+    an ordering that looks harmless: validation writes the person rows, then
+    translation mutates the extraction dict in place - and nothing saved it
+    again. Every person row in the database had a NULL `name_translated`, and
+    roughly 75 seconds of CPU per document went into values that were discarded.
+
+    The stage column said DONE throughout, which is why it survived so long:
+    nothing anywhere reported a problem.
+    """
+
+    @pytest.fixture()
+    def document(self, session_factory, temp_batch):
+        from core.db.engine import session_scope
+        from core.db.repositories import UnitOfWork
+
+        extraction = {
+            "seller_details": [{"name": "ಹೆಚ್. ಕೃಷ್ಣಮೂರ್ತಿ",
+                                "father_name": "ಕೆ. ನರಸಿಂಹಪ್ಪ",
+                                "address": "ನಾಗರಭಾವಿ, ಬೆಂಗಳೂರು"}],
+            "buyer_details": [{"name": "ಜಿ. ಸಿ. ಸೋಮಣ್ಣ"}],
+            "property_details": {"address": "ರಾಮನಗರ ಜಿಲ್ಲೆ"},
+            "document_details": {},
+        }
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            doc = uow.documents.list_for_batch(temp_batch, per_page=1)[0][0]
+            uow.results.save_property(doc, extraction["property_details"])
+            uow.results.replace_persons(doc, extraction)
+            doc_pk = doc.id
+        return doc_pk, extraction
+
+    def test_a_translated_name_reaches_the_database(self, session_factory,
+                                                    document):
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        doc_pk, extraction = document
+        # What the stage does: adds `<field>_translated` beside each field.
+        extraction["seller_details"][0]["name_translated"] = "H. Krishnamurthy"
+        extraction["seller_details"][0]["address_translated"] = "Nagarabhavi, Bengaluru"
+        extraction["buyer_details"][0]["name_translated"] = "G. C. Somanna"
+
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            written = uow.results.apply_translations(
+                session.get(Document, doc_pk), extraction)
+        assert written == 3, "the translated values were not written"
+
+        # A fresh session, so this is the database and not the identity map.
+        with session_scope(session_factory) as session:
+            doc = session.get(Document, doc_pk)
+            names = {p.relation.value: p.name_translated for p in doc.persons}
+        assert names["S"] == "H. Krishnamurthy"
+        assert names["B"] == "G. C. Somanna"
+
+    def test_the_original_is_kept_beside_the_translation(self, session_factory,
+                                                         document):
+        """The deed is a legal record; the source text is never replaced."""
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        doc_pk, extraction = document
+        extraction["seller_details"][0]["name_translated"] = "H. Krishnamurthy"
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            uow.results.apply_translations(session.get(Document, doc_pk),
+                                           extraction)
+        with session_scope(session_factory) as session:
+            seller = next(p for p in session.get(Document, doc_pk).persons
+                          if p.relation.value == "S")
+        assert seller.name == "ಹೆಚ್. ಕೃಷ್ಣಮೂರ್ತಿ"
+        assert seller.name_translated == "H. Krishnamurthy"
+
+    def test_the_person_rows_are_updated_not_replaced(self, session_factory,
+                                                      document):
+        """Rebuilding them would issue new primary keys, and the validation
+        flags recorded moments earlier reference the old ones - so the flags
+        would point at rows that no longer exist."""
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        doc_pk, extraction = document
+        with session_scope(session_factory) as session:
+            before = {p.id for p in session.get(Document, doc_pk).persons}
+
+        extraction["seller_details"][0]["name_translated"] = "H. Krishnamurthy"
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            uow.results.apply_translations(session.get(Document, doc_pk),
+                                           extraction)
+
+        with session_scope(session_factory) as session:
+            after = {p.id for p in session.get(Document, doc_pk).persons}
+        assert before == after, "person rows were recreated"
+
+    def test_nothing_is_written_when_there_is_nothing_to_write(
+            self, session_factory, document):
+        doc_pk, extraction = document
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            assert uow.results.apply_translations(
+                session.get(Document, doc_pk), extraction) == 0
+
+    def test_the_property_address_is_translated_too(self, session_factory,
+                                                    document):
+        from core.db.engine import session_scope
+        from core.db.models import Document
+        from core.db.repositories import UnitOfWork
+
+        doc_pk, extraction = document
+        extraction["property_details"]["address_translated"] = "Ramanagara District"
+        with session_scope(session_factory) as session:
+            uow = UnitOfWork(session)
+            uow.results.apply_translations(session.get(Document, doc_pk),
+                                           extraction)
+        with session_scope(session_factory) as session:
+            assert session.get(Document, doc_pk).property_.address_translated \
+                == "Ramanagara District"
+
+    def test_the_runner_persists_after_a_successful_translate(self):
+        """The wiring, not just the repository. Asserted on the source because
+        running it needs the translation model and several minutes of CPU - and
+        the defect was precisely that this call was absent."""
+        import inspect
+
+        from core.pipeline.runner import BatchRunner
+
+        body = inspect.getsource(BatchRunner._do_translate)
+        assert "apply_translations" in body, (
+            "the runner marks translate DONE without saving what it produced")
+        assert body.index("apply_translations") < body.index("StageState.DONE"), \
+            "the result must be saved before the stage is marked done"

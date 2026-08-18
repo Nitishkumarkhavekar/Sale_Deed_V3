@@ -462,9 +462,18 @@ class ExtractStage:
                 StageName.EXTRACT, f"{type(exc).__name__}: {exc}", retryable=True)
 
         if job.get("state") != "done":
+            # Named as a server problem rather than left as a bare state.
+            # A job accepted and then never finished is what a restart mid-batch
+            # looks like from here: the id is gone with the process that held
+            # it. "job ended in state None" classified as UNKNOWN_ERROR and the
+            # operator was told "Processing failed for an unrecognised reason",
+            # when the actual answer - the server went away, try again - is one
+            # they can act on.
             return StageOutcome.failure(
                 StageName.EXTRACT,
-                job.get("error") or f"job ended in state {job.get('state')!r}",
+                job.get("error")
+                or (f"AI server did not finish the job (state "
+                    f"{job.get('state')!r}) - it may have restarted"),
                 retryable=True)
 
         raw = job.get("result") or ""

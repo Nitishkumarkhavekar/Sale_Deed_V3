@@ -897,6 +897,11 @@ class BatchRunner:
             if doc is None:
                 return
             if outcome.ok:
+                # Persist what the stage produced. It mutates `parsed` in
+                # place, and `parsed` is not saved again after validation -
+                # so without this the translation is computed, reported as
+                # done, and thrown away.
+                uow.results.apply_translations(doc, parsed)
                 uow.documents.mark_stage(doc, "translate", StageState.DONE)
             else:
                 # Translation being unavailable must not fail a document whose

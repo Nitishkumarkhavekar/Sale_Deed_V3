@@ -917,6 +917,54 @@ class ResultRepository(_Base):
         prop.registration_office = data.get("registration_office")
         self.session.flush()
 
+    def apply_translations(self, doc: Document,
+                           extraction: dict[str, Any]) -> int:
+        """Write the `*_translated` values onto rows that already exist.
+
+        The translation stage runs *after* validation, because a document whose
+        extraction is sound must not be held up by a translator that may be
+        unavailable. Validation is what writes the person and property rows, so
+        by the time translation produces anything the rows are already saved -
+        and nothing was writing the result back. The stage reported success, the
+        stage column read DONE, and 75 seconds of CPU per document went into
+        values that were discarded: **every** person row in this database had a
+        NULL `name_translated`, so every export carried Kannada names in columns
+        meant to hold English.
+
+        Updates in place rather than calling `replace_persons` again. Rebuilding
+        the rows would issue new primary keys, and the validation flags recorded
+        moments earlier reference the old ones - so the flags would point at
+        rows that no longer exist.
+
+        Matched by (relation, ordinal), the same pair `replace_persons` assigns.
+        Returns the number of fields written.
+        """
+        written = 0
+        by_key = {(p.relation, p.ordinal): p for p in doc.persons}
+        for key, relation in (("buyer_details", PersonRelation.BUYER),
+                              ("seller_details", PersonRelation.SELLER)):
+            for ordinal, entry in enumerate(extraction.get(key) or [], start=1):
+                if not isinstance(entry, dict):
+                    continue
+                person = by_key.get((relation, ordinal))
+                if person is None:
+                    continue
+                for field in ("name", "father_name", "address"):
+                    value = entry.get(f"{field}_translated")
+                    if value and getattr(person, f"{field}_translated") != value:
+                        setattr(person, f"{field}_translated", value)
+                        written += 1
+
+        prop = doc.property_
+        address = (extraction.get("property_details") or {}).get(
+            "address_translated")
+        if prop is not None and address and prop.address_translated != address:
+            prop.address_translated = address
+            written += 1
+
+        self.session.flush()
+        return written
+
     def replace_persons(self, doc: Document, extraction: dict[str, Any]) -> list[Person]:
         """Replace all persons for a document. Idempotent across retries."""
         # Clear through the relationship so the in-session collection stays in

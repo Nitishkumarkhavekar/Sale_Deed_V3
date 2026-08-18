@@ -177,3 +177,39 @@ class TestAFilenameCannotDecideTheReason:
     def test_ordinary_text_survives_stripping(self):
         text = "OCR found only 12 characters across 20 pages"
         assert fc.strip_paths(text) == text
+
+
+class TestMessagesTheStagesActuallyProduce:
+    """Found by running bad files through the real stages rather than by
+    imagining what they would say.
+
+    Each of these was reaching an operator as "Processing failed for an
+    unrecognised reason" while another part of the application had a precise
+    answer for the same file - so one document told two stories depending on
+    which screen you looked at.
+    """
+
+    @pytest.mark.parametrize("technical,expected", [
+        # PyMuPDF, on a file emptied after upload.
+        ("EmptyFileError: Cannot open empty file: filename='x.pdf'.",
+         fc.PDF_EMPTY),
+        # The extraction stage, when the AI server accepted a job and then went
+        # away - which is what a restart mid-batch looks like from the client.
+        ("AI server did not finish the job (state None) - it may have restarted",
+         fc.AI_SERVER_UNAVAILABLE),
+    ])
+    def test_the_real_message_is_classified(self, technical, expected):
+        code, message, _ = fc.classify_text(technical)
+        assert code == expected, f"{technical[:60]!r} -> {code} ({message})"
+
+    def test_a_lost_job_is_retryable(self):
+        """The server coming back is exactly the case retry exists for."""
+        _code, _message, retryable = fc.classify_text(
+            "AI server did not finish the job (state None) - it may have restarted")
+        assert retryable is True
+
+    def test_an_empty_file_is_not_retryable(self):
+        """Retrying reads the same zero bytes. The file has to change first."""
+        _code, _message, retryable = fc.classify_text(
+            "EmptyFileError: Cannot open empty file")
+        assert retryable is False
