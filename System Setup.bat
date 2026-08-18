@@ -36,47 +36,41 @@ echo   Preparing this machine. Nothing already installed will be replaced.
 echo.
 
 REM -------------------------------------------------------------------
-REM  Find an interpreter.
+REM  Find an interpreter to BOOTSTRAP with.
 REM
-REM  Chosen by CAPABILITY, not by version number. This project deliberately
-REM  needs two Pythons - 3.13 for the application and 3.12 for OCR - and
-REM  installing the second changes what a bare "python" resolves to. Picking
-REM  the newest, or the first found, silently selects an interpreter without
-REM  the application's packages, and the failure reads as a broken program
-REM  rather than a wrong interpreter.
+REM  Only to build the virtual environment. The application's own packages go
+REM  into ".venv" a few lines below and are never installed system-wide, so
+REM  this interpreter needs nothing but a working "venv" module.
 REM
-REM  On a clean machine nothing has PySide6 yet, so any working Python is
-REM  accepted and the setup script installs the packages into it.
+REM  It used to be chosen by whether it already had PySide6, which was the
+REM  right question when packages lived in the system Python and is the wrong
+REM  one now: on a clean machine no interpreter has PySide6, and on this one
+REM  the answer would point at the very installation the venv exists to stop
+REM  depending on.
+REM
+REM  Version order still matters. This project deliberately needs two Pythons -
+REM  3.13 for the application and 3.12 for OCR - and installing the second
+REM  changes what a bare "python" resolves to. The list is in preference order
+REM  and the guard is what makes that order mean anything: without it every
+REM  iteration overwrites the previous, and a box with 3.12, 3.13 and 3.14
+REM  ends up building the venv from 3.14, which this project has never been
+REM  tested on.
 REM -------------------------------------------------------------------
 
 set "PYEXE="
 set "PYANY="
 
-REM  PYANY keeps the FIRST working interpreter, not the last. Without the
-REM  guard every iteration overwrote it, so on a clean machine - where none of
-REM  them has PySide6 yet - the fallback ended up as whichever version was
-REM  probed last. On a box with 3.12, 3.13 and 3.14 installed that selected
-REM  3.14, and the packages were installed into an interpreter this project
-REM  has never been tested on. The list below is in preference order and the
-REM  guard is what makes that order mean anything.
 for %%V in (3.13 3.12 3.14) do (
-    if not defined PYEXE (
-        if not defined PYANY (
-            py -%%V -c "import sys" >nul 2>&1 && set "PYANY=py -%%V"
-        )
-        py -%%V -c "import PySide6" >nul 2>&1 && set "PYEXE=py -%%V"
-    )
-)
-
-if not defined PYEXE (
     if not defined PYANY (
-        python -c "import sys" >nul 2>&1 && set "PYANY=python"
+        py -%%V -c "import venv" >nul 2>&1 && set "PYANY=py -%%V"
     )
-    python -c "import PySide6" >nul 2>&1 && set "PYEXE=python"
 )
 
-REM No configured interpreter yet is the normal first-run state.
-if not defined PYEXE if defined PYANY set "PYEXE=%PYANY%"
+if not defined PYANY (
+    python -c "import venv" >nul 2>&1 && set "PYANY=python"
+)
+
+set "PYEXE=%PYANY%"
 
 REM -------------------------------------------------------------------
 REM  No Python at all: install it, rather than telling the operator to.
@@ -146,10 +140,74 @@ if not defined PYEXE (
     echo.
 )
 
-echo   Using: %PYEXE%
+echo   Bootstrap interpreter: %PYEXE%
 echo.
 
-%PYEXE% "src\tools\system_setup.py" %*
+REM -------------------------------------------------------------------
+REM  The application's virtual environment.
+REM
+REM  Everything the application needs lives here and nowhere else, so a
+REM  machine's system Python is left exactly as it was found and two projects
+REM  on one machine cannot pull each other's package versions around.
+REM
+REM  Built from this file's own folder - the working directory was set from
+REM  %~dp0 at the top - so the path is whatever the project was copied to. No
+REM  drive letter is written down anywhere.
+REM
+REM  This is the application's environment only. OCR keeps its own under
+REM  models\SuryaOCR, because Surya pins a transformers version the rest of
+REM  the project cannot use, and vLLM keeps a third for the same reason. Those
+REM  are built by system_setup.py and are deliberately not merged into this
+REM  one - merging them is what makes an OCR upgrade break extraction.
+REM -------------------------------------------------------------------
+
+set "VENV_PY=%CD%\.venv\Scripts\python.exe"
+
+if not exist "%VENV_PY%" (
+    echo   Creating the application environment in .venv ...
+    %PYEXE% -m venv ".venv"
+    if errorlevel 1 (
+        echo.
+        echo   The virtual environment could not be created.
+        echo.
+        echo   Most often this is a Python installed without the "venv"
+        echo   module, or no permission to write inside:
+        echo       %CD%
+        echo.
+        echo   Try running this file from a folder you own, or reinstall
+        echo   Python from https://www.python.org/downloads/
+        echo.
+        pause
+        exit /b 1
+    )
+    echo   Created: .venv
+    echo.
+)
+
+REM  Present is not the same as working: a half-finished creation, or a folder
+REM  copied from another machine, leaves a .venv whose python.exe cannot run.
+REM  Checked before use so the failure names the environment rather than
+REM  surfacing later as a missing package.
+"%VENV_PY%" -c "import sys" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo   .venv exists but its Python does not run. It is probably damaged,
+    echo   or was copied from another machine - a virtual environment records
+    echo   absolute paths and cannot be moved.
+    echo.
+    echo   Delete the .venv folder and run this file again.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo   Using: %VENV_PY%
+echo.
+
+REM  Run the setup INSIDE the environment. Every install, migration and check
+REM  it performs uses sys.executable, so this one line is what puts the whole
+REM  installation into .venv rather than into the machine's Python.
+"%VENV_PY%" "src\tools\system_setup.py" %*
 set "RC=%ERRORLEVEL%"
 
 if not "%RC%"=="0" (

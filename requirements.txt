@@ -23,8 +23,15 @@ shiboken6==6.11.1
 # -- database ---------------------------------------------------------------
 # psycopg v3, never psycopg2: the DSN scheme is `postgresql+psycopg://` and
 # `postgresql://` alone silently resolves to psycopg2, which is not installed.
+#
+# `[binary]` is not optional. Plain `psycopg` is the pure-Python half and needs
+# libpq from a PostgreSQL client installation on PATH; without one it imports
+# and then fails with "no pq wrapper available" the first time anything touches
+# the database. This machine had psycopg-binary installed by hand at some point,
+# so the omission was invisible here and would have appeared only on the next
+# machine - which is precisely the failure this file exists to prevent.
 SQLAlchemy==2.0.51
-psycopg==3.3.4
+psycopg[binary]==3.3.4
 alembic==1.18.5
 
 # -- rendering --------------------------------------------------------------

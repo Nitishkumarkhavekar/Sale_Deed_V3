@@ -1,0 +1,59 @@
+# Sale Deed AI - the exact package set this project was last verified against.
+#
+# Generated, not hand-written:
+#
+#     .venv\Scripts\python.exe -m pip freeze > requirements.lock.txt
+#
+# `requirements.txt` is the file to edit and the file the installer uses. It
+# pins the packages this project imports directly and lets pip resolve the rest.
+# This file records what that resolution actually produced here, transitive
+# dependencies included, so an environment can be reproduced exactly when a
+# resolver difference is suspected:
+#
+#     .venv\Scripts\python.exe -m pip install -r requirements.lock.txt
+#
+# It is deliberately NOT what "System Setup.bat" installs. A lock file is a
+# record of one machine's resolution; installing from it on a different Python
+# minor version fails on a wheel that does not exist there, and a setup that
+# cannot complete is worse than one that resolves a patch version differently.
+#
+# Not included here, and not installable from it:
+#
+#   * OCR      models\SuryaOCR\venv_new  - pins transformers==4.57.1
+#   * vLLM     models\vllm-env           - pins transformers>=5.5.3
+#
+# Those two pin the same package to incompatible versions, which is why there
+# are three environments rather than one. Both are built by System Setup.bat.
+
+alembic==1.18.5
+annotated-doc==0.0.5
+backports.functools-lru-cache==2.0.0
+colorama==0.4.6
+greenlet==3.5.5
+indic_transliteration==2.3.82
+iniconfig==2.3.0
+Mako==1.4.1
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+packaging==26.3
+pluggy==1.6.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+Pygments==2.21.0
+pymupdf==1.28.0
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+pystache==0.6.8
+pytest==9.1.1
+regex==2026.7.19
+rich==15.0.0
+roman==5.2
+shellingham==1.5.4
+shiboken6==6.11.1
+SQLAlchemy==2.0.51
+toml==0.10.2
+tqdm==4.70.0
+typer==0.27.1
+typing_extensions==4.16.0
+tzdata==2026.3

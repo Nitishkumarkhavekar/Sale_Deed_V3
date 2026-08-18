@@ -419,19 +419,74 @@ def ensure_directories(report: Report, install: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def in_virtual_environment() -> bool:
+    """True when the running interpreter is a virtual environment.
+
+    `base_prefix` differs from `prefix` inside a venv and matches outside it.
+    This is the documented test and it works for `venv` and `virtualenv` alike.
+    """
+    return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+
+
+def _report_environment(report: Report) -> None:
+    """Say which interpreter the installation is going into.
+
+    Worth a line of its own in the report. "Installed successfully" against the
+    wrong interpreter is the failure this whole arrangement exists to prevent,
+    and it is invisible unless something states the answer.
+    """
+    expected = paths.ROOT / ".venv"
+    inside = in_virtual_environment()
+    here = Path(sys.prefix).resolve()
+
+    if inside and here == expected.resolve():
+        report.add(Step("Environment", Status.FOUND,
+                        f"project virtualenv {expected.name}"))
+        return
+    if inside:
+        # A venv, but not this project's. Usable, and not something to refuse -
+        # a developer may well have their own - but it must be visible.
+        report.add(Step("Environment", Status.FOUND,
+                        f"virtualenv at {here}"))
+        return
+    # `MISSING` rather than a new status: `_MARK` has no entry for anything
+    # else and would render "[ ?? ]", and this is exactly what MISSING means
+    # here - the project environment is absent from this run, and the remedy
+    # line says how to get it.
+    report.add(Step(
+        "Environment", Status.MISSING,
+        "not a virtual environment - packages would go system-wide",
+        remedy='run "System Setup.bat", which builds .venv and uses it'))
+
+
 def ensure_packages(report: Report, install: bool) -> None:
     """Install `requirements.txt` into the interpreter running this script.
 
-    No virtual environment is created. The application is a desktop program with
-    one set of dependencies, and a venv here would mean `System Setup.bat` and
-    `Run Sale Deed AI.bat` had to agree about which interpreter to use - a
-    disagreement that has already cost this project one defect (R-015). The
-    second environment that *does* exist, `SuryaOCR/venv_new`, is there because
-    its pins genuinely conflict, which is the only good reason for one.
+    Which is the project's own `.venv`: `System Setup.bat` creates it and runs
+    this file with it, so every install here - and every migration, check and
+    subprocess below, all of which use `sys.executable` - lands inside it and
+    the machine's Python is left as it was found.
+
+    That the two batch files must agree about the interpreter was the original
+    argument against a venv, and it was a real one: disagreeing about it cost
+    this project a defect (R-015). They agree by construction now. Both resolve
+    `.venv\\Scripts\\python.exe` relative to their own folder and neither
+    accepts anything else, so there is one answer rather than two guesses.
+
+    The other two environments stay separate on purpose. `SuryaOCR/venv_new`
+    pins `transformers==4.57.1` and vLLM pins `>=5.5.3`; merging either into
+    this one is what makes an OCR upgrade break extraction.
     """
     started = time.monotonic()
+    _report_environment(report)
     required = {"PySide6": "PySide6", "sqlalchemy": "SQLAlchemy",
-                "psycopg": "psycopg", "alembic": "alembic",
+                # `import psycopg` covers the binary half as well: without a pq
+                # wrapper it does not import at all, it raises "no pq wrapper
+                # available". Checking for `psycopg_binary` separately looks
+                # more thorough and is wrong - that module refuses to import
+                # unless `psycopg` was imported first, so the probe reports it
+                # missing on a machine where it is installed and working.
+                "psycopg": "psycopg[binary]", "alembic": "alembic",
                 "pystache": "pystache", "pymupdf": "PyMuPDF"}
     missing = [name for module, name in required.items()
                if not _importable(module)]
@@ -721,6 +776,13 @@ def ensure_configuration(report: Report, dsn: str, install: bool,
     """
     started = time.monotonic()
     env_path = paths.ROOT / ".env"
+    if not dsn:
+        # No DSN could be built - the packages are not in yet. Saying so beats
+        # reporting the file's presence as though it had been validated.
+        report.add(Step("Configuration", Status.SKIPPED,
+                        "not checked - install the packages first",
+                        time.monotonic() - started))
+        return
     if not install:
         report.add(Step("Configuration",
                         Status.FOUND if env_path.is_file() else Status.MISSING,
@@ -866,16 +928,12 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
 
     password = args.db_password or _generate_password()
-    # Assembled once, from this machine's answers, and never rebuilt from
-    # literals further down.
     sys.path.insert(0, str(ROOT))
-    from core.db.engine import build_dsn
-
-    dsn = build_dsn({"SALEDEED_DB_HOST": args.db_host,
-                     "SALEDEED_DB_PORT": args.db_port,
-                     "SALEDEED_DB_NAME": args.db_name,
-                     "SALEDEED_DB_USER": args.db_user,
-                     "SALEDEED_DB_PASSWORD": password})
+    db_settings = {"SALEDEED_DB_HOST": args.db_host,
+                   "SALEDEED_DB_PORT": args.db_port,
+                   "SALEDEED_DB_NAME": args.db_name,
+                   "SALEDEED_DB_USER": args.db_user,
+                   "SALEDEED_DB_PASSWORD": password}
 
     print()
     print("  Sale Deed AI - System Setup")
@@ -931,6 +989,33 @@ def main(argv: list[str] | None = None) -> int:
     ensure_vcredist(report, install)
     ensure_python_312(report, install)
     ensure_packages(report, install)
+
+    # The DSN is assembled here, not at the top of `main`, and the reason is
+    # ordering rather than tidiness: `build_dsn` lives in `core.db.engine`,
+    # which imports SQLAlchemy. On a machine whose virtualenv was created
+    # moments ago nothing is installed yet, so building it any earlier ends the
+    # setup with `ModuleNotFoundError: sqlalchemy` before `ensure_packages` has
+    # had its chance to fix exactly that. It only ever worked because the
+    # interpreter running the setup already had the packages - which is the
+    # assumption the virtualenv exists to remove.
+    #
+    # Assembled once, from this machine's answers, and never rebuilt from
+    # literals further down.
+    try:
+        from core.db.engine import build_dsn
+
+        dsn = build_dsn(db_settings)
+    except ImportError:
+        # Report-only, on a machine whose virtualenv was created seconds ago:
+        # nothing is installed, so the module that builds the DSN cannot be
+        # imported. That is a fact to report, not a reason to abort - the whole
+        # point of --report-only is to survey a machine before touching it.
+        #
+        # Not rebuilt from a local copy of the URL logic. A second
+        # implementation of a connection string is how the two drift and a
+        # password ends up quoted one way here and another way there; the
+        # steps that need it say they cannot check yet instead.
+        dsn = ""
 
     print("\n  Application")
     print("  " + "-" * 66)

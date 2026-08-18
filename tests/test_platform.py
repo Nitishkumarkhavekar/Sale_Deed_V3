@@ -682,10 +682,41 @@ class TestSystemSetupShim:
 
     def test_it_works_from_a_path_with_spaces(self):
         r"""This project lives in `d:\saledeed v3`. Every path the shim uses has
-        to be quoted or the space splits the command."""
+        to be quoted or the space splits the command.
+
+        The interpreter is quoted as well now, which the previous form could not
+        be: it was `%PYEXE%`, holding `py -3.13` - two tokens that quoting would
+        have broken. The shim runs the setup with the virtualenv's python.exe,
+        a single path, so it both can and must be quoted.
+        """
         body = self.BAT.read_text(encoding="utf-8", errors="replace")
         assert 'cd /d "%~dp0"' in body
-        assert '%PYEXE% "src\\tools\\system_setup.py"' in body
+        assert '"%VENV_PY%" "src\\tools\\system_setup.py"' in body
+
+    def test_the_setup_runs_inside_the_project_virtualenv(self):
+        """Everything `system_setup.py` installs goes to `sys.executable`, so
+        the interpreter the shim picks decides whether the whole installation
+        lands in `.venv` or in the machine's Python."""
+        body = self.BAT.read_text(encoding="utf-8", errors="replace")
+        assert r"set \"VENV_PY=%CD%\.venv\Scripts\python.exe\"".replace("\\\"", '"') in body
+        assert "-m venv" in body, "the shim never creates the environment"
+
+    def test_a_damaged_virtualenv_is_reported_rather_than_used(self):
+        """A .venv copied from another machine exists but cannot run - a venv
+        records absolute paths. Using it produces a missing-package error that
+        names the wrong problem."""
+        body = self.BAT.read_text(encoding="utf-8", errors="replace")
+        assert '"%VENV_PY%" -c "import sys"' in body
+
+    def test_the_bootstrap_interpreter_is_not_chosen_by_pyside(self):
+        """It used to be, which was right when packages lived system-wide and
+        is wrong now: on a clean machine nothing has PySide6, and on a
+        configured one it would point at the very installation the virtualenv
+        exists to stop depending on. All the bootstrap needs is `venv`."""
+        body = self.BAT.read_text(encoding="utf-8", errors="replace")
+        head = body[:body.index("-m venv")]
+        assert "import PySide6" not in head
+        assert "import venv" in head
 
     def test_the_preferred_interpreter_is_not_overwritten(self):
         """The fallback keeps the FIRST working interpreter, not the last.
