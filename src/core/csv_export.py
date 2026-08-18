@@ -268,16 +268,11 @@ def _to_decimal(value: Any) -> Decimal | None:
 def person_shares(total: Any, count: int) -> list[str]:
     """Split a deed's consideration equally between `count` parties.
 
-    **Every party on the deed shares one pool**, sellers and buyers together. A
-    deed of ₹10,000 with two sellers and two buyers gives ₹2,500 to each of the
-    four, and the four shares add back to ₹10,000 exactly once.
-
-    This replaced a per-side split, in which each side divided the whole
-    consideration between itself - ₹5,000 to each seller *and* ₹5,000 to each
-    buyer. Both rules are defensible and they answer different questions; the
-    caller decides, and this is the one specified. `count` is therefore the
-    total party count, and `build_rows` computes it across both sides before it
-    writes a single row.
+    **Each side is split on its own.** A deed of ₹1,000 with four buyers and two
+    sellers gives ₹250 to every buyer and ₹500 to every seller: the buyers share
+    the whole consideration between themselves and so do the sellers, because
+    each side is a complete account of the same transaction seen from one end.
+    Dividing by six would report a transaction that never happened.
 
     The shares always add back to `total`. An amount that does not divide evenly
     leaves a remainder, and dropping it would understate the deed - ₹1,000 over
@@ -1107,28 +1102,16 @@ def build_rows(documents: list[DocumentExport], *,
         # Sellers first, then buyers - the order the reference report uses, and
         # the order a deed reads in: the party parting with the property is
         # named before the party acquiring it.
-        # Both sides are selected before any row is written, because the
-        # consideration is divided by *every* party on the deed - sellers and
-        # buyers together - and that count is known only after duplicates and
-        # unusable names are removed. Splitting by the raw lists instead would
-        # leave a deed that dropped a duplicate buyer handing out more than its
-        # own value.
-        #
-        # Sellers are still selected first, so `seen_parties` resolves a person
-        # appearing on both sides the same way it always has, and the rows keep
-        # the order the reference report uses.
-        selected: list[tuple[str, list[tuple[int, dict[str, Any]]]]] = []
         for side, relation in (("seller_details", "S"), ("buyer_details", "B")):
-            selected.append(
-                (relation, _parties_for_side(doc, side, relation, seen_parties)))
+            # Selected before any row is written, because the consideration is
+            # split by *how many parties this side actually has* - and that is
+            # known only after duplicates and unusable names are removed. Split
+            # by the raw list instead and a deed that dropped a duplicate buyer
+            # would hand out three quarters of its own value.
+            parties = _parties_for_side(doc, side, relation, seen_parties)
+            shares = person_shares(amount, len(parties))
 
-        shares = person_shares(amount, sum(len(p) for _, p in selected))
-        share_index = 0
-
-        for relation, parties in selected:
-            for ordinal, person in parties:
-                share = shares[share_index]
-                share_index += 1
+            for (ordinal, person), share in zip(parties, shares):
                 row = dict.fromkeys(CSV_COLUMNS, "")
                 row.update(base)
                 row.update(_person_fields(
