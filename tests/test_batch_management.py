@@ -425,7 +425,18 @@ class TestDeletionHandlesFiles:
 
         service.batch_action(batch_id, "delete")
 
-        assert source.exists(), "deleting a batch destroyed the operator's PDF"
+        # Diagnostic rather than a bare assert. This failed once in a full run
+        # and could not be reproduced in thirteen further runs, so the next
+        # occurrence needs to say which of the two things happened: the
+        # application deleted the file, or the temporary directory went away
+        # underneath the test. Those have completely different causes and the
+        # bare assertion distinguished neither.
+        assert source.parent.exists(), (
+            f"the temporary directory itself is gone ({source.parent}) - this "
+            "is an environment failure, not the application deleting a PDF")
+        assert source.exists(), (
+            f"deleting a batch destroyed the operator's PDF at {source}. "
+            f"Directory now holds: {sorted(p.name for p in source.parent.iterdir())}")
 
     def test_a_missing_prepared_file_does_not_fail_the_delete(
             self, service, make_batch, session_factory, tmp_path):
@@ -714,3 +725,73 @@ class TestTheBadgeColours:
         from app.ui.renderer import state_badge
 
         assert state_badge("stopping") == state_badge("running")
+
+
+class TestOnlyDerivedFilesAreEverDeleted:
+    """The invariant behind `test_the_source_pdf_is_never_removed`, asserted
+    directly rather than by observing a file afterwards.
+
+    That test failed once in a full run and could not be reproduced in thirteen
+    further runs, so it is worth pinning the property it is really checking:
+    the delete path is fed by `cleaned_paths`, which selects rows whose
+    `cleaned_path` is set. A source PDF can only be removed if it somehow
+    reaches that list, and this asserts that it cannot.
+    """
+
+    def test_the_delete_path_only_ever_sees_cleaned_paths(self, make_batch,
+                                                          session_factory,
+                                                          tmp_path):
+        source = tmp_path / "original.pdf"
+        source.write_bytes(b"%PDF-1.4 original")
+        prepared = tmp_path / "prepared.pdf"
+        prepared.write_bytes(b"%PDF-1.4 prepared")
+
+        batch_id = make_batch("FS-invariant")
+        with session_scope(session_factory) as session:
+            doc = UnitOfWork(session).documents.list_for_batch(
+                batch_id, per_page=1)[0][0]
+            doc.source_path = str(source)
+            doc.cleaned_path = str(prepared)
+
+        with session_scope(session_factory) as session:
+            paths = UnitOfWork(session).batches.cleaned_paths(batch_id)
+
+        assert str(prepared) in paths
+        assert str(source) not in paths, (
+            "the source PDF reached the list of files the delete removes")
+
+    def test_a_document_with_no_prepared_copy_contributes_nothing(
+            self, make_batch, session_factory, tmp_path):
+        """The case in the flaky test: only `source_path` is set, so the delete
+        has no file to remove at all."""
+        source = tmp_path / "original.pdf"
+        source.write_bytes(b"%PDF-1.4 original")
+        batch_id = make_batch("FS-nocleaned")
+        with session_scope(session_factory) as session:
+            doc = UnitOfWork(session).documents.list_for_batch(
+                batch_id, per_page=1)[0][0]
+            doc.source_path = str(source)
+
+        with session_scope(session_factory) as session:
+            assert UnitOfWork(session).batches.cleaned_paths(batch_id) == []
+
+    def test_the_application_deletes_files_in_exactly_one_place(self):
+        """If a second deletion site appears, the invariant above stops being
+        the whole story and this test says so."""
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "src"
+        sites = []
+        for path in root.rglob("*.py"):
+            if "__pycache__" in path.parts or path.parts[-2] == "tools":
+                continue
+            for number, line in enumerate(
+                    path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if re.search(r"\.unlink\(|shutil\.rmtree|os\.remove", line):
+                    sites.append(f"{path.relative_to(root).as_posix()}:{number}")
+        # services (the batch delete), backup rotation, log rotation.
+        unexpected = [s for s in sites
+                      if not s.startswith(("app/services.py", "core/backup.py",
+                                           "core/logging_setup.py"))]
+        assert not unexpected, f"a new file-deletion site appeared: {unexpected}"

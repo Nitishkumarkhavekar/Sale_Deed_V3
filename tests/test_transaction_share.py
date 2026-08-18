@@ -1,19 +1,23 @@
-"""Splitting a deed's consideration between the parties on each side.
+"""Splitting a deed's consideration between the people on it.
 
 Every row used to carry the deed's full consideration, so a ₹1,000 deed with
 four buyers and two sellers reported ₹6,000 of transactions.
 
-The rule is that **each side is divided on its own**: the buyers share the whole
-consideration between themselves, and so do the sellers, because each side is a
-complete account of the same transaction seen from one end. Dividing by the
-combined head count would report a transaction that never took place.
+The rule is that **all parties on the deed share one pool**: sellers and buyers
+together. ₹10,000 with two sellers and two buyers gives ₹2,500 to each of the
+four, and the four shares add back to ₹10,000 once.
 
-Two properties carry most of the weight here, and both are about money rather
-than arithmetic:
+This replaced a per-side split, in which each side divided the whole
+consideration between itself - ₹5,000 to every seller *and* ₹5,000 to every
+buyer, so each side's rows summed to the deed total separately. Both are
+defensible and they answer different questions. The combined rule is the one
+specified, and the tests below pin it so the two cannot be confused again.
 
-  * **Each side sums back to the deed total.** ₹1,000 over three parties as
-    ₹333.33 each reports ₹999.99 - a shortfall in a tax return, arrived at by
-    rounding. Tested at many awkward divisors, not just the tidy ones.
+Two properties carry most of the weight, and both are about money:
+
+  * **The shares add back to the total.** ₹1,000 over three parties as ₹333.33
+    each reports ₹999.99 - a shortfall in a tax return, arrived at by rounding.
+    Tested at many awkward divisors, not just the tidy ones.
   * **The divisor is the number of rows actually written.** Duplicates and
     unusable names are dropped before the split, so the shares cannot be
     computed against a party count the export does not produce.
@@ -59,6 +63,10 @@ def _deed(sellers: int, buyers: int, amount="1000", **extra) -> DocumentExport:
         })
 
 
+def _shares(rows) -> list[str]:
+    return [r[AMOUNT_COLUMN] for r in rows]
+
+
 def _by_side(rows) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {"S": [], "B": []}
     for row in rows:
@@ -72,50 +80,57 @@ def _by_side(rows) -> dict[str, list[str]]:
 
 
 class TestTheWorkedExample:
-    """₹1,000, four buyers, two sellers - the case in the specification."""
+    """₹10,000, two sellers, two buyers - the case in the specification."""
 
-    def test_each_buyer_gets_a_quarter(self):
-        shares = _by_side(build_rows([_deed(sellers=2, buyers=4)]))
-        assert shares["B"] == ["250"] * 4
+    def test_every_person_gets_a_quarter(self):
+        rows = build_rows([_deed(sellers=2, buyers=2, amount="10000")])
+        assert _shares(rows) == ["2500"] * 4
 
-    def test_each_seller_gets_a_half(self):
-        shares = _by_side(build_rows([_deed(sellers=2, buyers=4)]))
-        assert shares["S"] == ["500"] * 2
+    def test_sellers_and_buyers_are_treated_alike(self):
+        split = _by_side(build_rows([_deed(sellers=2, buyers=2, amount="10000")]))
+        assert split["S"] == split["B"] == ["2500", "2500"]
 
-    def test_the_sides_are_not_pooled(self):
-        """Six parties dividing ₹1,000 would be ₹166.67 each. That is the
-        mistake this rule exists to prevent."""
-        shares = _by_side(build_rows([_deed(sellers=2, buyers=4)]))
-        assert "166.67" not in shares["B"] + shares["S"]
+    def test_the_deed_total_is_shared_once_across_everyone(self):
+        rows = build_rows([_deed(sellers=2, buyers=2, amount="10000")])
+        assert sum(Decimal(s) for s in _shares(rows)) == Decimal("10000")
 
-    def test_the_deed_total_is_unchanged_on_every_row(self):
+    def test_it_is_not_split_per_side(self):
+        """The rule this replaced would give ₹5,000 to each of the four, and
+        each side would sum to the deed total separately."""
+        assert "5000" not in _shares(
+            build_rows([_deed(sellers=2, buyers=2, amount="10000")]))
+
+    def test_the_deed_total_column_is_unchanged(self):
         """The per-person column is derived; the deed's own column still
         carries what the deed says."""
-        rows = build_rows([_deed(sellers=2, buyers=4)])
-        assert {r["Transaction Amount"] for r in rows} == {"1000"}
+        rows = build_rows([_deed(sellers=2, buyers=2, amount="10000")])
+        assert {r["Transaction Amount"] for r in rows} == {"10000"}
 
 
-class TestEverySideCountUpTo12:
+class TestEveryPartyCountUpTo12:
     @pytest.mark.parametrize("count", range(1, 13))
-    def test_one_side_divides_by_its_own_count(self, count):
+    def test_the_pool_divides_by_the_whole_party_count(self, count):
         rows = build_rows([_deed(sellers=count, buyers=1, amount="1200")])
-        sellers = _by_side(rows)["S"]
-        assert len(sellers) == count
-        assert sum(Decimal(s) for s in sellers) == Decimal("1200")
+        shares = _shares(rows)
+        assert len(shares) == count + 1
+        assert sum(Decimal(s) for s in shares) == Decimal("1200")
 
     @pytest.mark.parametrize("sellers,buyers", [
         (1, 1), (1, 2), (2, 1), (3, 4), (4, 3), (5, 2), (7, 11), (10, 10),
     ])
-    def test_both_sides_each_sum_to_the_whole(self, sellers, buyers):
-        rows = build_rows([_deed(sellers=sellers, buyers=buyers, amount="4473271")])
-        split = _by_side(rows)
-        assert sum(Decimal(s) for s in split["S"]) == Decimal("4473271")
-        assert sum(Decimal(s) for s in split["B"]) == Decimal("4473271")
+    def test_the_shares_always_add_back(self, sellers, buyers):
+        rows = build_rows([_deed(sellers=sellers, buyers=buyers,
+                                 amount="4473271")])
+        assert sum(Decimal(s) for s in _shares(rows)) == Decimal("4473271")
+        assert len(_shares(rows)) == sellers + buyers
 
     def test_a_lone_party_receives_the_whole_amount(self):
-        split = _by_side(build_rows([_deed(sellers=1, buyers=1, amount="56700000")]))
-        assert split["S"] == ["56700000"]
-        assert split["B"] == ["56700000"]
+        rows = build_rows([_deed(sellers=1, buyers=0, amount="56700000")])
+        assert _shares(rows) == ["56700000"]
+
+    def test_one_of_each_halves_it(self):
+        rows = build_rows([_deed(sellers=1, buyers=1, amount="56700000")])
+        assert _shares(rows) == ["28350000", "28350000"]
 
 
 class TestOneSidedDeeds:
@@ -143,7 +158,7 @@ class TestOneSidedDeeds:
 
 class TestNothingIsLostToRounding:
     @pytest.mark.parametrize("total,count", [
-        ("1000", 3), ("1000", 7), ("1000", 6), ("100", 3), ("1", 3),
+        ("1000", 3), ("1000", 6), ("1000", 7), ("100", 3), ("1", 3),
         ("4473271", 3), ("56700000", 7), ("0.03", 2), ("10", 8),
         ("999999999", 7), ("0.01", 3),
     ])
@@ -157,18 +172,26 @@ class TestNothingIsLostToRounding:
         """Deterministic, so two exports of one deed agree."""
         assert person_shares("1000", 3) == ["333.34", "333.33", "333.33"]
 
+    def test_the_earlier_worked_example_now_splits_six_ways(self):
+        """₹1,000 with two sellers and four buyers. Under the previous rule
+        this gave ₹500 and ₹250; under this one all six share the pool."""
+        rows = build_rows([_deed(sellers=2, buyers=4, amount="1000")])
+        shares = _shares(rows)
+        assert len(shares) == 6
+        assert sum(Decimal(s) for s in shares) == Decimal("1000")
+        assert shares[0] == "166.67"
+
     def test_the_split_is_reproducible(self):
         assert person_shares("1000", 7) == person_shares("1000", 7)
 
     def test_no_share_differs_from_another_by_more_than_a_paisa(self):
-        """Equal division, to the smallest unit that exists."""
         shares = [Decimal(s) for s in person_shares("1000", 7)]
         assert max(shares) - min(shares) <= Decimal("0.01")
 
     def test_whole_rupees_keep_their_plain_form(self):
-        """What the column held before this change, and what an evenly divided
-        deed should still produce - not "250.00"."""
-        assert person_shares("1000", 4) == ["250"] * 4
+        """Not "2500.00" - what the column held before this change, and what
+        every evenly divided deed still produces."""
+        assert person_shares("10000", 4) == ["2500"] * 4
         assert person_shares("56700000", 3) == ["18900000"] * 3
 
     def test_part_rupees_carry_exactly_two_decimals(self):
@@ -214,11 +237,11 @@ class TestAmountsAsTheyArriveFromTheDatabase:
     text; the model sometimes writes separators."""
 
     @pytest.mark.parametrize("value", [
-        Decimal("1000"), "1000", 1000, " 1000 ", "1,000", "₹1,000", "Rs.1000",
-        "Rs 1000", "INR1000", "1,000.00",
+        Decimal("10000"), "10000", 10000, " 10000 ", "10,000", "₹10,000",
+        "Rs.10000", "Rs 10000", "INR10000", "10,000.00",
     ])
     def test_every_shape_divides_the_same(self, value):
-        assert person_shares(value, 4) == ["250"] * 4
+        assert person_shares(value, 4) == ["2500"] * 4
 
     def test_an_indian_grouped_amount_is_read(self):
         assert person_shares("45,00,000", 4) == ["1125000"] * 4
@@ -231,8 +254,8 @@ class TestAmountsAsTheyArriveFromTheDatabase:
 
 class TestTheDivisorMatchesTheRows:
     def test_a_dropped_duplicate_does_not_shrink_everyone_else(self):
-        """The export drops a party listed twice. Splitting by the raw list
-        would hand out three quarters of the deed's value and leave the rest
+        """The export drops a party listed twice. Splitting by the raw lists
+        would hand out more than the deed's value and leave the rest
         unaccounted for."""
         twin = _person("B1")
         doc = DocumentExport(
@@ -243,12 +266,11 @@ class TestTheDivisorMatchesTheRows:
                 "property_details": {"sale_consideration": "900"},
                 "document_details": {},
             })
-        rows = build_rows([doc])
-        buyers = _by_side(rows)["B"]
+        shares = _shares(build_rows([doc]))
 
-        assert len(buyers) == 2, "the duplicate was not dropped"
-        assert buyers == ["450", "450"]
-        assert sum(Decimal(b) for b in buyers) == Decimal("900")
+        assert len(shares) == 3, "the duplicate was not dropped"
+        assert shares == ["300", "300", "300"]
+        assert sum(Decimal(s) for s in shares) == Decimal("900")
 
     def test_a_party_with_no_usable_name_does_not_take_a_share(self):
         doc = DocumentExport(
@@ -259,8 +281,8 @@ class TestTheDivisorMatchesTheRows:
                 "property_details": {"sale_consideration": "800"},
                 "document_details": {},
             })
-        split = _by_side(build_rows([doc]))
-        assert split["S"] == ["800"], "the unnamed party took a share"
+        shares = _shares(build_rows([doc]))
+        assert shares == ["400", "400"], "the unnamed party took a share"
 
     def test_a_non_dictionary_entry_is_ignored(self):
         doc = DocumentExport(
@@ -271,30 +293,30 @@ class TestTheDivisorMatchesTheRows:
                 "property_details": {"sale_consideration": "600"},
                 "document_details": {},
             })
-        assert _by_side(build_rows([doc]))["S"] == ["600"]
+        assert _shares(build_rows([doc])) == ["600"]
 
-    def test_someone_on_both_sides_is_counted_once_per_side(self):
-        """A person selling and buying in one deed keeps a row on each side,
-        and each row is split against that side's own count."""
+    def test_someone_on_both_sides_counts_twice(self):
+        """A person selling and buying in one deed keeps a row on each side, so
+        they hold two shares of the pool - which is what the rows say."""
         both = _person("X1")
         doc = DocumentExport(
             transaction_identity="DEED-BOTH",
             extraction={
                 "seller_details": [both],
                 "buyer_details": [dict(both), _person("B2")],
-                "property_details": {"sale_consideration": "1000"},
+                "property_details": {"sale_consideration": "900"},
                 "document_details": {},
             })
         split = _by_side(build_rows([doc]))
-        assert split["S"] == ["1000"]
-        assert split["B"] == ["500", "500"]
+        assert split["S"] == ["300"]
+        assert split["B"] == ["300", "300"]
 
 
 class TestSeveralDeedsAtOnce:
     def test_each_deed_is_split_against_its_own_parties(self):
         """The rule is per transaction identity. A shared divisor across deeds
         would be wrong for all but one of them."""
-        first = _deed(sellers=2, buyers=4, amount="1000")
+        first = _deed(sellers=2, buyers=2, amount="10000")
         second = DocumentExport(
             transaction_identity="DEED-2",
             extraction={
@@ -307,8 +329,8 @@ class TestSeveralDeedsAtOnce:
 
         one = [r for r in rows if r["Transaction Identity"] == "DEED-1"]
         two = [r for r in rows if r["Transaction Identity"] == "DEED-2"]
-        assert _by_side(one) == {"S": ["500", "500"], "B": ["250"] * 4}
-        assert _by_side(two) == {"S": ["600"], "B": ["300", "300"]}
+        assert _shares(one) == ["2500"] * 4
+        assert _shares(two) == ["200", "200", "200"]
 
 
 # ---------------------------------------------------------------------------
@@ -333,9 +355,6 @@ class TestTheRestOfTheRowIsUntouched:
     def test_names_and_identifiers_still_arrive(self):
         rows = build_rows([_deed(sellers=1, buyers=1)])
         assert rows[0]["Person Name (PC)"] == "PERSON S1"
-        # The shape, not a literal: the fixture generates a distinct PAN per
-        # party, and pinning one here only records what the fixture happens to
-        # produce today.
         assert rows[0]["PAN (PC)"] == _person("S1")["pan_card_number"]
         assert rows[0]["Aadhaar Number (PC)"] == _person("S1")["aadhaar_number"]
 
@@ -347,13 +366,11 @@ class TestTheRestOfTheRowIsUntouched:
         from core.csv_export import write_csv
 
         target = tmp_path / "export.csv"
-        write_csv(target, [_deed(sellers=2, buyers=4)])
+        write_csv(target, [_deed(sellers=2, buyers=2, amount="10000")])
 
         with target.open(encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
-        split = _by_side(rows)
-        assert split["S"] == ["500", "500"]
-        assert split["B"] == ["250"] * 4
+        assert _shares(rows) == ["2500"] * 4
 
     def test_the_excel_safe_export_carries_the_split(self, tmp_path):
         """Identifier columns are wrapped as formulas in this mode; the amount
@@ -363,10 +380,11 @@ class TestTheRestOfTheRowIsUntouched:
         from core.csv_export import write_csv
 
         target = tmp_path / "export-excel.csv"
-        write_csv(target, [_deed(sellers=2, buyers=4)], excel_safe=True)
+        write_csv(target, [_deed(sellers=2, buyers=2, amount="10000")],
+                  excel_safe=True)
 
         with target.open(encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.DictReader(handle))
         for row in rows:
             assert not row[AMOUNT_COLUMN].startswith("=")
-        assert _by_side(rows)["B"] == ["250"] * 4
+        assert _shares(rows) == ["2500"] * 4
