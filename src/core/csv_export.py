@@ -550,16 +550,115 @@ PAN_HOLDER_TYPE = {
 #: first called it agricultural - which is how the reference example came
 #: out wrong. So: what the deed *calls* the property first, what it is made
 #: of second.
+#: `Property Type` codes. Single letters, as the receiving format requires -
+#: the column used to carry words ("Residential"), which no downstream reader
+#: accepts.
+PROPERTY_TYPES = {
+    "agricultural": "A",
+    "non_agricultural": "N",
+    "commercial": "C",
+    "residential": "R",
+    "industrial": "I",
+    "other": "Z",
+    "not_categorised": "X",
+}
+
+#: Ordered, and the order is the rule. Each entry is (code, pattern) and the
+#: first match wins, so the list runs from the most specific statement of use to
+#: the least:
+#:
+#:   I  an industrial estate or factory is never anything else
+#:   C  a shop or commercial complex likewise
+#:   R  a house, flat or residential site - this beats N deliberately, because
+#:      "converted residential site" is a residential property; the conversion
+#:      says how it stopped being agricultural, not what it is now
+#:   N  converted or non-agricultural land with no use stated
+#:   A  agricultural land, only when nothing above matched - a deed that says
+#:      "agricultural land converted to residential" is residential
+#:
+#: `Z` and `X` are not in this list: `Z` needs a positive signal that the
+#: property is something else, and `X` is the absence of any signal at all.
 PROPERTY_KINDS = (
-    ("Commercial", re.compile(
-        r"(?i)(commercial|\bshop\b|godown|industrial|showroom|ವಾಣಿಜ್ಯ)")),
-    ("Residential", re.compile(
+    ("I", re.compile(
+        r"(?i)(industrial|\bfactory\b|\bKIADB\b|\bKSSIDC\b|godown|warehouse|"
+        r"manufactur|ಕೈಗಾರಿಕ|ಕಾರ್ಖಾನೆ)")),
+    ("C", re.compile(
+        r"(?i)(commercial|\bshop\b|showroom|business\s+premises|office\s+space|"
+        r"\bmall\b|complex\s+bearing|ವಾಣಿಜ್ಯ|ಅಂಗಡಿ)")),
+    ("R", re.compile(
         r"(?i)(residential|dwelling|\bhouse\b|apartment|\bflat\b|"
-        r"\bsite\b|\bconverted\b|ವಸತಿ|ನಿವೇಶನ|ಮನೆ)")),
-    ("Agricultural", re.compile(
-        r"(?i)(agricultur|\bacres?\b|\bguntas?\b|\bkharab\b|"
+        r"residential\s+site|house\s*site|ವಸತಿ|ನಿವೇಶನ|ಮನೆ)")),
+    ("N", re.compile(
+        r"(?i)(non[-\s]?agricultur|\bN\.?A\.?\s+(land|site|plot)|"
+        r"\bconvert(ed|ion)\b|ಪರಿವರ್ತ)")),
+    ("A", re.compile(
+        r"(?i)(agricultur|\bkharab\b|\bacres?\b|\bguntas?\b|"
         r"ಕೃಷಿ|ಜಮೀನು|ಗುಂಟೆ|ಎಕರೆ)")),
 )
+
+#: A property that is plainly something else - neither land nor a building of
+#: the four kinds above. Checked only after all of them fail, so it cannot
+#: outrank a stated use.
+_OTHER_PROPERTY = re.compile(
+    r"(?i)(temple|\bchurch\b|\bmosque\b|burial|graveyard|\bschool\b|"
+    r"\bcollege\b|hospital|\bwakf\b|charitable|ದೇವಸ್ಥಾನ|ಶಾಲೆ)")
+
+#: Where a deed starts describing the property it is actually conveying.
+#:
+#: Anchored to a line start, because the words appear mid-sentence in the
+#: operative clause of almost every deed - "conveys the schedule property to
+#: the purchaser" is a reference to the schedule, not the schedule itself, and
+#: cutting there starts the window in the recitals.
+#: The lookbehinds are what separate a heading from a reference to one, and
+#: they were read off the corpus rather than imagined. A deed refers to its own
+#: schedule constantly - "the Government Market value of the schedule property
+#: is Rs.1,20,00,000", "constructed on the Schedule 'A' Property" - and every
+#: one of those is preceded by an article or a preposition. A real heading is
+#: not:
+#:
+#:     SCHEDULE Agricultural land bearing Sy.No. ...
+#:     SCHEDULE "B" PROPERTY All that piece and parcel of ...
+#:     SCHEDULE:- All that piece and parcel of the House Property ...
+#:     ಶೆಡ್ಯೂಲ್ 'ಡಿ' ಸ್ಪತ್ತು: ಶಿವಮೊಗ್ಗ ಜಿಲ್ಲೆ ...
+#:
+#: Anchoring to a line start instead looked more principled and matched 2 deeds
+#: in 50, because OCR does not preserve the layout that would make it true.
+_SCHEDULE_HEADER = re.compile(
+    r"(?i)(?<!\bthe )(?<!\bof )(?<!\bon )(?<!\bin )(?<!\bsaid )"
+    r"(schedule\b|ಅನುಸೂಚಿ|ಶೆಡ್ಯೂಲ್|ಪರಿಶಿಷ್ಟ)")
+
+#: How much of the deed after the heading counts as the schedule. A property
+#: description is a paragraph or two; the pages after it are signatures,
+#: witnesses and attestations.
+#:
+#: Bounded rather than run to the end of the document, and the bound is what
+#: makes the section mean anything: an unbounded cut swept in every later page,
+#: so the classifier matched whatever word appeared anywhere in the tail. On
+#: deed 1896 that turned a schedule reading "ಜಮೀನುಗಳು ಭೂ-ಪರಿವರ್ತನೆಯಾಗಿ"
+#: (converted land, N) into C, because a commercial word appeared several pages
+#: further on.
+SCHEDULE_WINDOW_CHARS = 2000
+
+
+def schedule_section(text: str | None) -> str:
+    """The Schedule of Property, or empty when the deed has no such heading.
+
+    The **last** heading, not the first. A deed refers to "the schedule
+    property" throughout its operative clauses and then sets the schedule out at
+    the end, so the last occurrence is the description and the earlier ones are
+    references to it.
+
+    This exists because classifying from the whole deed reads the *parties'*
+    addresses too. "Residing at his house in Bengaluru" is not a statement about
+    the land being sold, and on a corpus where 38 of 50 deeds mention a house
+    somewhere it is the difference between reading the deed and guessing.
+    """
+    body = str(text or "")
+    matches = list(_SCHEDULE_HEADER.finditer(body))
+    if not matches:
+        return ""
+    start = matches[-1].start()
+    return body[start:start + SCHEDULE_WINDOW_CHARS]
 
 _MUNICIPAL = re.compile(
     r"(?i)(municipal|mahanagara|corporation|city\s+council|town\s+council|"
@@ -828,15 +927,37 @@ def address_type(address: str | None, person: dict[str, Any] | None = None) -> s
     return ADDRESS_TYPES["unspecified"]
 
 
-def property_type(*texts: str | None) -> str:
-    """Agricultural, Commercial or Residential from how the deed describes it."""
-    blob = " ".join(str(t) for t in texts if t)
-    if not blob.strip():
-        return ""
-    for label, pattern in PROPERTY_KINDS:
-        if pattern.search(blob):
-            return label
-    return ""
+def property_type(schedule_address: str | None = None,
+                  source_text: str | None = None) -> str:
+    """The property's type as a single code: A, N, C, R, I, Z or X.
+
+    Read from the deed in order of authority, stopping at the first source that
+    answers:
+
+      1. **The Schedule of Property**, when the deed has one. This is the
+         section that describes what is being conveyed, so it outranks
+         everything else by construction.
+      2. **The schedule address** the extraction pulled out, for a deed whose
+         schedule heading the OCR did not capture.
+      3. **The whole deed**, last. It contains the parties' own addresses, so a
+         match here is the weakest kind of evidence - but a deed that describes
+         its land only in the recitals still deserves an answer.
+
+    `X` when none of them says anything. Not a guess and not a blank: the format
+    provides "Not Categorized" precisely for a deed that does not state it, and
+    inventing `R` because somebody's home was mentioned is how a farm gets
+    reported as a house.
+    """
+    for source in (schedule_section(source_text), schedule_address, source_text):
+        blob = str(source or "").strip()
+        if not blob:
+            continue
+        for code, pattern in PROPERTY_KINDS:
+            if pattern.search(blob):
+                return code
+        if _OTHER_PROPERTY.search(blob):
+            return PROPERTY_TYPES["other"]
+    return PROPERTY_TYPES["not_categorised"]
 
 
 def within_municipal_limits(*texts: str | None) -> str:
@@ -1029,17 +1150,20 @@ CODED_COLUMNS = {
     "Identification Type (PC)": {"A", "B", "C", "D", "E", "G", "H", "Z"},
     "Transaction Type": {"S", "B"},
     "Transaction Relation (PC)": {"S", "B"},
+    # A/N/C/R/I/Z/X. This column held words - "Residential", "Commercial" -
+    # until it was specified as coded, and a word here is rejected by the
+    # receiving system rather than by anything visible in a spreadsheet.
+    "Property Type": set(PROPERTY_TYPES.values()),
 }
 
 
 def coded_column_violations(rows: list[dict[str, str]]) -> list[str]:
     """Cells in a coded column holding something outside its code set.
 
-    Exists because the failure it catches is silent. `Address Type` sits beside
-    `Property Type`, which legitimately holds words like "Residential" and
-    "Commercial"; a mapping that wrote a description into the coded column would
-    look entirely plausible in a spreadsheet and would only be rejected much
-    later, by the system that consumes the file.
+    Exists because the failure it catches is silent. A description written into
+    a coded column looks entirely plausible in a spreadsheet and is only
+    rejected much later, by the system that consumes the file - which is exactly
+    what `Property Type` did while it carried "Residential" instead of `R`.
     """
     problems: list[str] = []
     for index, row in enumerate(rows, start=1):

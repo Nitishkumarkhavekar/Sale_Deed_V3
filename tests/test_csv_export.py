@@ -312,14 +312,16 @@ class TestAgainstTheReferenceReport:
 
     def test_a_converted_site_is_residential_not_agricultural(self):
         """"Residential Site ... formed in converted Survey No.06" - the survey
-        number says where the land came from. Matching it first made the
-        reference document come out Agricultural."""
-        assert self._rows()[0]["Property Type"] == "Residential"
+        number says where the land came from, and the conversion says how it
+        stopped being farmland. Neither is what it is now.
+
+        `R`, not `A` and not `N`: the stated use outranks both."""
+        assert self._rows()[0]["Property Type"] == "R"
 
     def test_real_agricultural_land_is_still_agricultural(self):
-        """The precedence fix must not simply relabel everything residential."""
-        assert property_type("Survey No 42 measuring 2 acres of agricultural land") \
-            == "Agricultural"
+        """The precedence must not simply relabel everything residential."""
+        assert property_type(
+            None, "Survey No 42 measuring 2 acres of agricultural land") == "A"
 
     def test_bbmp_is_within_municipal_limits(self):
         assert self._rows()[0]["Whether property is within municipal limits"] == "Yes"
@@ -690,11 +692,12 @@ class TestCodedColumnsHoldCodesOnly:
             assert row["Address Type (PC-L)"] not in {
                 "Residential", "Commercial", "Business", "Agricultural"}
 
-    def test_property_type_keeps_its_words_and_address_type_its_codes(self):
-        """Both columns are correct at once; they are not the same field."""
+    def test_property_type_and_address_type_use_their_own_code_sets(self):
+        """Both are coded now, and they are not the same field: the property's
+        type is a letter from A/N/C/R/I/Z/X, a party's address is 1 to 5."""
         rows = build_rows([_export_with_both_identifiers()])
         row = rows[0]
-        assert row["Property Type"] == "Residential"
+        assert row["Property Type"] == "R"
         assert row["Address Type (PC-L)"] == "2"
 
     def test_a_clean_export_reports_no_violations(self):
