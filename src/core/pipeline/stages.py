@@ -656,6 +656,11 @@ PERSON_FIELDS: tuple[tuple[str, str], ...] = (
     # value was found leaking into the export with no translation path at all.
     ("gender", "translate"),
     ("occupation", "translate"),
+    # A state name is a proper noun with a settled English form, so it is
+    # transliterated rather than translated - "Karnataka", not a rendering of
+    # what the name means. Added because `State (PC-L)` had no translation path
+    # at all and relied on the model choosing English of its own accord.
+    ("state", "transliterate"),
 )
 
 #: Document-level free text. The registration office and document type are
@@ -675,6 +680,7 @@ PROPERTY_FIELDS: tuple[tuple[str, str], ...] = (
     ("village", "transliterate"),
     ("district", "transliterate"),
     ("taluk", "transliterate"),
+    ("state", "transliterate"),
 )
 
 

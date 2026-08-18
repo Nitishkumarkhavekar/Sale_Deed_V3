@@ -270,12 +270,12 @@ class TestCoverageOfEveryKannadaColumn:
                 "schedule_c_property_address": self.KN_TEXT,
                 "property_description": self.KN_TEXT,
                 "village": self.KN_TEXT, "district": self.KN_TEXT,
-                "taluk": self.KN_TEXT,
+                "taluk": self.KN_TEXT, "state": self.KN_TEXT,
             },
             "buyer_details": [{
                 "name": self.KN_NAME, "father_name": self.KN_NAME,
                 "address": self.KN_TEXT, "gender": self.KN_TEXT,
-                "occupation": self.KN_TEXT,
+                "occupation": self.KN_TEXT, "state": self.KN_TEXT,
             }],
             "seller_details": [],
         }
@@ -633,3 +633,116 @@ class TestReTranslatingOldRecords:
         assert 'id="btn-retranslate"' in template
         ast.parse((root / "src" / "app" / "services.py").read_text(
             encoding="utf-8"))
+
+
+class TestEveryTextColumnIsEnglish:
+    """The requirement is the *output*: no regional text in a column specified
+    as English. Three columns read the raw extraction key while the translate
+    stage was producing a translation they ignored - the same failure
+    `_translated` was written to prevent, repeated in three more places.
+    """
+
+    @staticmethod
+    def _row(**person):
+        from core.csv_export import DocumentExport, build_rows
+
+        base = {"name": "ರಮೇಶ್", "name_translated": "Ramesh",
+                "pan_card_number": "ABCPK1234F"}
+        base.update(person)
+        return build_rows([DocumentExport(
+            transaction_identity="EN-1",
+            extraction={"seller_details": [base], "buyer_details": [],
+                        "property_details": {}, "document_details": {}})])[0]
+
+    def test_gender_uses_the_translation(self):
+        """`gender` has been in the stage's field list since a Kannada value was
+        found in this column - but the export read the raw key, so the
+        translation was computed and discarded."""
+        row = self._row(gender="ಪುರುಷ", gender_translated="Male")
+        assert row["Gender (PC)"] == "Male"
+
+    def test_the_party_state_uses_the_translation(self):
+        row = self._row(state="ಕರ್ನಾಟಕ", state_translated="Karnataka")
+        assert row["State (PC-L)"] == "Karnataka"
+
+    def test_the_property_state_uses_the_translation(self):
+        from core.csv_export import DocumentExport, build_rows
+
+        rows = build_rows([DocumentExport(
+            transaction_identity="EN-2",
+            extraction={
+                "seller_details": [{"name": "A", "pan_card_number": "ABCPK1234F"}],
+                "buyer_details": [],
+                "property_details": {"state": "ಕರ್ನಾಟಕ",
+                                     "state_translated": "Karnataka"},
+                "document_details": {}})])
+        assert rows[0]["State Code"] == "Karnataka"
+
+    def test_the_original_is_kept_when_there_is_no_translation(self):
+        """A blank is worse than a Kannada value: a reader can see Kannada and
+        act on it, but cannot see an absence."""
+        row = self._row(gender="ಪುರುಷ")
+        assert row["Gender (PC)"] == "ಪುರುಷ"
+
+    def test_state_has_a_translation_path_at_all(self):
+        """It had none - the column relied on the model choosing English."""
+        from core.pipeline.stages import PERSON_FIELDS, PROPERTY_FIELDS
+
+        assert "state" in {f for f, _ in PERSON_FIELDS}
+        assert "state" in {f for f, _ in PROPERTY_FIELDS}
+
+    def test_state_is_transliterated_not_translated(self):
+        """A place name is a proper noun: "Karnataka", not a rendering of what
+        the name means."""
+        from core.pipeline.stages import PERSON_FIELDS
+
+        assert dict(PERSON_FIELDS)["state"] == "transliterate"
+
+    def test_identifiers_are_never_routed_through_translation(self):
+        """PAN, Aadhaar, amounts and dates must survive exactly. None of them
+        may acquire a `_translated` variant, and none is in the stage lists."""
+        from core.pipeline.stages import (
+            DOCUMENT_FIELDS, PERSON_FIELDS, PROPERTY_FIELDS,
+        )
+
+        translated = ({f for f, _ in PERSON_FIELDS}
+                      | {f for f, _ in PROPERTY_FIELDS}
+                      | {f for f, _ in DOCUMENT_FIELDS})
+        for identifier in ("pan_card_number", "aadhaar_number",
+                           "sale_consideration", "registration_fee",
+                           "transaction_date", "registration_number",
+                           "survey_number"):
+            assert identifier not in translated, (
+                f"{identifier} would be altered by the translator")
+
+    def test_the_export_reports_columns_it_could_not_translate(self):
+        """Logged *and* returned. A log line is a record, not a notification."""
+        from core.csv_export import DocumentExport, write_csv
+        import tempfile
+
+        report: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            write_csv(f"{tmp}/x.csv", [DocumentExport(
+                transaction_identity="EN-3",
+                extraction={
+                    "seller_details": [{"name": "ರಮೇಶ್ ಕುಮಾರ್",
+                                        "pan_card_number": "ABCPK1234F"}],
+                    "buyer_details": [], "property_details": {},
+                    "document_details": {}})], report=report)
+        assert "Person Name (PC)" in report["untranslated"]
+
+    def test_a_fully_translated_export_reports_nothing(self):
+        from core.csv_export import DocumentExport, write_csv
+        import tempfile
+
+        report: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            write_csv(f"{tmp}/y.csv", [DocumentExport(
+                transaction_identity="EN-4",
+                extraction={
+                    "seller_details": [{"name": "ರಮೇಶ್",
+                                        "name_translated": "Ramesh",
+                                        "pan_card_number": "ABCPK1234F"}],
+                    "buyer_details": [], "property_details": {},
+                    "document_details": {}})], report=report)
+        assert report["untranslated"] == {}

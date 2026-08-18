@@ -406,7 +406,14 @@
         busy(t, true);
         call("export", { batch_id: +(d.exportBatch || d.exportFailed),
                          failed_only: !!d.exportFailed })
-          .then(function (r) { busy(t, false); toast("Exported " + r.rows + " rows to <code>" + r.path + "</code>", "ok"); })
+          .then(function (r) {
+            busy(t, false);
+            toast("Exported " + r.rows + " rows to <code>" + r.path + "</code>", "ok");
+            // Two notices, not one merged into it: the file was written and
+            // that is a success, but regional text reaching a column specified
+            // as English is a separate thing the operator has to act on.
+            if (r.warning) toast(r.warning, "warn");
+          })
           .catch(function (e) { busy(t, false); toast(e.message, "danger"); });
         return;
       }

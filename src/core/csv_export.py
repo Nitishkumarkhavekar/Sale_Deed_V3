@@ -429,7 +429,11 @@ def _document_fields(doc: DocumentExport, serial: int) -> dict[str, str]:
         # this one.
         "City / Town": city_town(address),
         "Postal Code": extract_pincode(address),
-        "State Code": _clean(prop.get("state")),
+        # The prompt asks the model for English state names, and mostly
+        # gets them - but "mostly" is not a guarantee, and this column
+        # is consumed by a system that matches on the name. Routed
+        # through the translator like the rest.
+        "State Code": _clean(_translated(prop, "state")),
         "Country Code": COUNTRY,
         # Derived by `validation.derive_stamp_value` and carried here by the
         # caller: the registration fee, halved before the cutoff (ADR-010).
@@ -457,7 +461,12 @@ def _person_fields(person: dict[str, Any], relation: str, amount: str,
         "Transaction Amount related to the person (PC)": amount,
         "Person Name (PC)": _clean(name),
         "Person Type (PC)": person_type(person),
-        "Gender (PC)": _clean(person.get("gender")),
+        # Through `_translated`, like every other free-text column. The
+        # stage has translated `gender` since a Kannada value was found
+        # leaking into this column - but the export read the raw key, so
+        # the translation was produced and then ignored. Exactly the
+        # failure `_translated` exists to prevent.
+        "Gender (PC)": _clean(_translated(person, "gender")),
         "Father's Name (PC)": _clean(father),
         "PAN (PC)": _identifier(person.get("pan_card_number"), excel_safe),
         "Aadhaar Number (PC)": _identifier(person.get("aadhaar_number"), excel_safe),
@@ -477,7 +486,7 @@ def _person_fields(person: dict[str, Any], relation: str, amount: str,
         # being asked for.
         "City/Town (PC-L)": property_city,
         "Pin Code (PC-L)": extract_pincode(address),
-        "State (PC-L)": _clean(person.get("state")),
+        "State (PC-L)": _clean(_translated(person, "state")),
         "Country (PC-L)": COUNTRY,
         "Primary STD Code (PC)": "",
         "Primary Phone Number (PC)": "",
@@ -1192,7 +1201,8 @@ def coded_column_violations(rows: list[dict[str, str]]) -> list[str]:
 
 
 def write_csv(path: str | Path, documents: list[DocumentExport], *,
-              excel_safe: bool = False, encoding: str = "utf-8-sig") -> int:
+              excel_safe: bool = False, encoding: str = "utf-8-sig",
+              report: dict[str, Any] | None = None) -> int:
     """Write the 42-column export. Returns the row count.
 
     `utf-8-sig` by default: the BOM is what makes Excel read Kannada text
@@ -1220,6 +1230,14 @@ def write_csv(path: str | Path, documents: list[DocumentExport], *,
             "export contains untranslated text in %d column(s)",
             len(remaining),
             extra={"columns": sorted(remaining), "path": str(target)})
+
+    if report is not None:
+        # Handed back to the caller so the *operator* learns of it too. A log
+        # line is a record, not a notification: an export that quietly ships
+        # regional text into columns specified as English is exactly the
+        # failure that has to be visible on the screen that produced it.
+        report["untranslated"] = {k: v for k, v in sorted(remaining.items())}
+        report["coded_violations"] = offenders
 
     with target.open("w", newline="", encoding=encoding) as fh:
         writer = csv.DictWriter(fh, fieldnames=list(CSV_COLUMNS),

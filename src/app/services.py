@@ -750,6 +750,7 @@ class AppService:
 
     def export_batch(self, batch_id: int, failed_only: bool = False,
                      destination: str | Path | None = None) -> dict[str, Any]:
+        report: dict[str, Any] = {}
         with session_scope(self.sessions) as session:
             uow = UnitOfWork(session)
             batch = uow.batches.get(batch_id)
@@ -776,8 +777,22 @@ class AppService:
                 docs, _ = uow.documents.list_for_batch(batch_id, per_page=100_000)
                 exports = [self._document_export(d) for d in docs]
                 path = self._export_path(destination, f"{safe}_{stamp}.csv")
-                count = write_csv(path, exports)
-        return {"rows": count, "path": str(path)}
+                count = write_csv(path, exports, report=report)
+
+        payload: dict[str, Any] = {"rows": count, "path": str(path)}
+        untranslated = report.get("untranslated") or {}
+        if untranslated:
+            # The operator is told, on the screen that produced the file. The
+            # export is still written - a blank cell is worse than a Kannada
+            # one, because a reader can see Kannada and act on it - but shipping
+            # regional text into columns specified as English must never be
+            # something only the log knows about.
+            payload["untranslated_columns"] = sorted(untranslated)
+            payload["warning"] = (
+                f"{len(untranslated)} column(s) still contain regional text: "
+                f"{', '.join(sorted(untranslated))}. Use Re-translate on the "
+                "Data View, then export again.")
+        return payload
 
     @staticmethod
     def _export_path(destination: str | Path | None, default_name: str) -> Path:
