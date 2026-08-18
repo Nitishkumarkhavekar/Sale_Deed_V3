@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 _log = logging.getLogger("saledeed.transaction_id")
 
@@ -225,6 +226,24 @@ def _score(candidates: list[Candidate], text: str) -> None:
         candidate.score += 1.0 * (1.0 - candidate.position / last_position)
 
 
+def from_source_name(source: str) -> str:
+    """A registration number taken from the file name, or empty.
+
+    **Only when the name is already a canonical registration number.** The
+    registry names its scans after the number they carry, so
+    `RMN-1-02264-2024-25.pdf` states the answer outright - and it is the same
+    answer the text candidates are validated against, checked by the same
+    pattern.
+
+    Anything else returns empty. R-043 was exactly this fallback done without
+    the check: a deed whose number could not be read exported "275" - its file
+    stem - into the Transaction Identity column. The validation is what makes
+    this safe, so it is not optional and not loosened.
+    """
+    stem = Path(str(source or "")).stem.strip()
+    return stem if CANONICAL.match(stem) else ""
+
+
 def extract(text: str, *, source: str = "", ocr_used: bool | None = None) -> Extraction:
     """Read the Transaction Identity from a deed's text.
 
@@ -233,7 +252,22 @@ def extract(text: str, *, source: str = "", ocr_used: bool | None = None) -> Ext
     value that might belong to a previous owner.
     """
     candidates = find_candidates(text)
+    from_name = from_source_name(source)
+
     if not candidates:
+        if from_name:
+            # The text said nothing, but the file is named after the number and
+            # that name passes the same validation a text candidate must pass.
+            # Confidence is lower than any text match: the name is evidence
+            # about the file, not about what the deed says inside.
+            _log.info("transaction identity %s from the file name", from_name,
+                      extra={"source": source, "ocr_used": ocr_used,
+                             "value": from_name, "confidence": 0.6,
+                             "why": "no candidate in the text; the file name is "
+                                    "a valid registration number"})
+            return Extraction(value=from_name, confidence=0.6,
+                              reason="taken from the file name, which is a "
+                                     "valid registration number")
         _log.info("no transaction identity found", extra={
             "source": source, "ocr_used": ocr_used, "candidates": 0})
         return Extraction(reason="no candidate matched the registration format")
@@ -252,6 +286,16 @@ def extract(text: str, *, source: str = "", ocr_used: bool | None = None) -> Ext
         confidence = 0.85
     elif runner_up is not None and best.score - runner_up.score >= 2.0:
         confidence = 0.7
+    elif from_name and from_name in distinct:
+        # Two candidates the text cannot separate, and the file is named after
+        # one of them. That is independent evidence, not a coin flip: the
+        # registry named the scan after the number it carries.
+        best = next(c for c in ranked if c.value == from_name)
+        confidence = 0.8
+        _log.info("transaction identity %s - the file name settled an ambiguity",
+                  from_name, extra={"source": source, "ocr_used": ocr_used,
+                                    "candidates": sorted(distinct),
+                                    "value": from_name})
     else:
         # Two candidates the evidence cannot separate. A coin flip here would
         # write a previous owner's document number into a legal export.
