@@ -24,6 +24,7 @@ import csv
 import logging
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -226,6 +227,90 @@ def _clean(value: Any) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
     return _defuse(re.sub(r"\s+", " ", str(value)).strip())
+
+
+#: Smallest unit the split is allowed to leave over: one paisa. Shares are
+#: rounded to this and the remainder handed out one unit at a time, so a set of
+#: shares always adds back to the deed's own consideration.
+_PAISA = Decimal("0.01")
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    """Read a consideration as a number, or None if it is not one.
+
+    The column is populated from `Property.sale_consideration`, which is already
+    a `Decimal`, but it also survives a round trip through the CSV as text - and
+    a deed occasionally carries a value the model wrote with separators or a
+    currency mark. Anything that cannot be read as a number returns None, and
+    the caller leaves the cell exactly as it found it rather than inventing a
+    figure for a tax return.
+    """
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, int):
+        return Decimal(value)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # Currency marks, thousands separators (Indian or Western grouping) and
+    # stray spaces. Not a general parser: anything left that is not a plain
+    # number is refused below.
+    text = re.sub(r"[₹$,\s]", "", text)
+    text = text.removeprefix("Rs.").removeprefix("Rs").removeprefix("INR")
+    if not re.fullmatch(r"-?\d+(\.\d+)?", text):
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def person_shares(total: Any, count: int) -> list[str]:
+    """Split a deed's consideration equally between `count` parties.
+
+    **Each side is split on its own.** A deed of ₹1,000 with four buyers and two
+    sellers gives ₹250 to every buyer and ₹500 to every seller: the buyers share
+    the whole consideration between themselves and so do the sellers, because
+    each side is a complete account of the same transaction seen from one end.
+    Dividing by six would report a transaction that never happened.
+
+    The shares always add back to `total`. An amount that does not divide evenly
+    leaves a remainder, and dropping it would understate the deed - ₹1,000 over
+    three parties as ₹333.33 each reports ₹999.99. The remainder is handed out a
+    paisa at a time to the earliest parties, so three parties receive ₹333.34,
+    ₹333.33 and ₹333.33. Deterministic, so two exports of the same deed agree.
+
+    Whole-rupee shares are rendered without decimals, which is what the column
+    held before this and what every evenly-divided deed still produces.
+    """
+    if count <= 0:
+        return []
+    amount = _to_decimal(total)
+    if amount is None:
+        # Not a number - a blank, or something the model wrote that cannot be
+        # read as one. Passed through unchanged: a wrong figure in this column
+        # is worse than the original text, which at least shows what was found.
+        return [_clean(total)] * count
+
+    divisor = Decimal(count)
+    # `quantize` rounds; the remainder is then distributed explicitly, so no
+    # rounding mode can silently lose or invent money.
+    base = (amount / divisor).quantize(_PAISA, rounding=ROUND_DOWN)
+    shares = [base] * count
+    remainder = amount - base * divisor
+    units = int((remainder / _PAISA).to_integral_value(rounding=ROUND_HALF_UP))
+    for index in range(min(units, count)):
+        shares[index] += _PAISA
+
+    whole = all(share == share.to_integral_value() for share in shares)
+    return [_format_share(share, whole) for share in shares]
+
+
+def _format_share(share: Decimal, whole: bool) -> str:
+    """Whole rupees without a decimal point, part-rupees with exactly two."""
+    if whole:
+        return str(share.to_integral_value())
+    return str(share.quantize(_PAISA))
 
 
 def _identifier(value: Any, excel_safe: bool) -> str:
@@ -815,6 +900,58 @@ def unpopulated_reasons(row: dict[str, str]) -> dict[str, str]:
     return reasons
 
 
+def _parties_for_side(doc: DocumentExport, side: str, relation: str,
+                      seen_parties: set[tuple[str, ...]]) -> list[tuple[int, dict[str, Any]]]:
+    """The parties on one side of a deed that will become rows.
+
+    Split out of `build_rows` so the count is available *before* the rows are
+    written: the consideration is divided by the number of parties on this side,
+    and that number is only correct after the same filtering the rows go through.
+
+    `seen_parties` is shared across both sides and carries the relation in its
+    key, so someone appearing as both seller and buyer keeps a row on each side.
+    """
+    kept: list[tuple[int, dict[str, Any]]] = []
+    for ordinal, person in enumerate(doc.extraction.get(side) or [], start=1):
+        if not isinstance(person, dict):
+            continue
+
+        # One row per party. The model occasionally lists the same person twice
+        # - same name, same Aadhaar - and each copy became a row carrying the
+        # whole document with it.
+        key = _party_key(person, relation)
+        if key in seen_parties:
+            _log.info("duplicate party dropped", extra={
+                "document": doc.transaction_identity,
+                "relation": relation, "ordinal": ordinal,
+                # Not "name": LogRecord reserves it, and passing it raises
+                # KeyError from inside logging - so the export would crash on
+                # the very case this line reports.
+                "party": _clean(_translated(person, "name"))})
+            continue
+        seen_parties.add(key)
+
+        raw_name = _clean(_translated(person, "name"))
+        if raw_name != primary_name(raw_name):
+            _log.info("alias removed from name", extra={
+                "document": doc.transaction_identity,
+                "relation": relation, "ordinal": ordinal,
+                "full": raw_name, "kept": primary_name(raw_name)})
+
+        if not looks_like_a_name(_translated(person, "name")):
+            # Punctuation is not a name. Reported rather than exported: a row
+            # naming nobody is worse than a document one row short, and the log
+            # says which document to look at.
+            _log.warning("party has no usable name", extra={
+                "document": doc.transaction_identity,
+                "relation": relation, "ordinal": ordinal,
+                "value": _clean(_translated(person, "name"))})
+            continue
+
+        kept.append((ordinal, person))
+    return kept
+
+
 def build_rows(documents: list[DocumentExport], *,
                excel_safe: bool = False) -> list[dict[str, str]]:
     """Expand documents into per-person rows.
@@ -836,46 +973,19 @@ def build_rows(documents: list[DocumentExport], *,
         # the order a deed reads in: the party parting with the property is
         # named before the party acquiring it.
         for side, relation in (("seller_details", "S"), ("buyer_details", "B")):
-            for ordinal, person in enumerate(doc.extraction.get(side) or [], start=1):
-                if not isinstance(person, dict):
-                    continue
+            # Selected before any row is written, because the consideration is
+            # split by *how many parties this side actually has* - and that is
+            # known only after duplicates and unusable names are removed. Split
+            # by the raw list instead and a deed that dropped a duplicate buyer
+            # would hand out three quarters of its own value.
+            parties = _parties_for_side(doc, side, relation, seen_parties)
+            shares = person_shares(amount, len(parties))
 
-                # One row per party. The model occasionally lists the same
-                # person twice - same name, same Aadhaar - and each copy became
-                # a row carrying the whole document with it.
-                key = _party_key(person, relation)
-                if key in seen_parties:
-                    _log.info("duplicate party dropped", extra={
-                        "document": doc.transaction_identity,
-                        "relation": relation, "ordinal": ordinal,
-                        # Not "name": LogRecord reserves it, and passing it
-                        # raises KeyError from inside logging - so the export
-                        # would crash on the very case this line reports.
-                        "party": _clean(_translated(person, "name"))})
-                    continue
-                seen_parties.add(key)
-
-                raw_name = _clean(_translated(person, "name"))
-                if raw_name != primary_name(raw_name):
-                    _log.info("alias removed from name", extra={
-                        "document": doc.transaction_identity,
-                        "relation": relation, "ordinal": ordinal,
-                        "full": raw_name, "kept": primary_name(raw_name)})
-
-                if not looks_like_a_name(_translated(person, "name")):
-                    # Punctuation is not a name. Reported rather than exported:
-                    # a row naming nobody is worse than a document one row
-                    # short, and the log says which document to look at.
-                    _log.warning("party has no usable name", extra={
-                        "document": doc.transaction_identity,
-                        "relation": relation, "ordinal": ordinal,
-                        "value": _clean(_translated(person, "name"))})
-                    continue
-
+            for (ordinal, person), share in zip(parties, shares):
                 row = dict.fromkeys(CSV_COLUMNS, "")
                 row.update(base)
                 row.update(_person_fields(
-                    person, relation, amount,
+                    person, relation, share,
                     _person_remarks(doc, relation, ordinal), excel_safe,
                     property_city=base.get("City / Town", "")))
                 row.update({k: v for k, v in doc.extras.items() if k in CSV_COLUMNS})
