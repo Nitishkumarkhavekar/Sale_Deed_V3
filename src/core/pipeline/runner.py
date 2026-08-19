@@ -920,7 +920,7 @@ class BatchRunner:
                 return "review"
 
             # `report.stamp_value` is the derived figure - the registration fee,
-            # halved for transactions before the cutoff (docs/DECISIONS ADR-010).
+            # halved for transactions before the cutoff (docs/DOCUMENTATION.md).
             # Validation computed it and then nobody carried it here, so
             # `Property.stamp_value` stayed NULL and the CSV column was blank on
             # every document ever exported. Worse, `save_property` assigns the

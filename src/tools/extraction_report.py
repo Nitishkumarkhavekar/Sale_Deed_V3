@@ -10,7 +10,7 @@ not contain the value or because extraction missed it?
 
 Reads OCR from the corpus rather than running Surya, so a run costs about
 fifteen seconds per document instead of twenty minutes. OCR accuracy is measured
-separately - see `docs/TEST_REPORT.md`.
+separately - see `docs/DOCUMENTATION.md`.
 """
 
 from __future__ import annotations

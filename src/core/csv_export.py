@@ -112,7 +112,7 @@ class DocumentExport:
     extraction: dict[str, Any]
     report: ValidationReport | None = None
     source_filename: str = ""
-    #: Passthrough. The Stamp Value formula is undefined (docs/DECISIONS ADR-010),
+    #: Passthrough. The Stamp Value formula is undefined (docs/DOCUMENTATION.md),
     #: so nothing is computed here - whatever the caller supplies is written.
     stamp_value: str | None = None
     #: The document's OCR text, when the caller has it. Used only to classify

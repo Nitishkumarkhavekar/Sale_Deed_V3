@@ -14,7 +14,7 @@ and that path is broken on the v6.7 weights actually present - the model was
 trained only on the full schema. A same-prompt retry is useless because
 temperature is 0, so a rerun is byte-identical. `ExtractStage` therefore reports
 `retry_supported = False` on v6.7 and routes failures to review instead of
-pretending to retry. See docs/KNOWN_ISSUES.md B-002.
+pretending to retry. See docs/DOCUMENTATION.md.
 """
 
 from __future__ import annotations
@@ -439,7 +439,7 @@ class ExtractStage:
         #: 1.0 = disabled, and it must stay disabled. A penalty suppresses the
         #: repeated key tokens that JSON array elements share, truncating the
         #: party list. Measured: at 1.1 the model emitted 3 of 5 persons and
-        #: nulled paid_in_cash. See docs/DECISIONS.md ADR-011.
+        #: nulled paid_in_cash. See docs/DOCUMENTATION.md.
         repetition_penalty: float = 1.0,
         grammar: str | None = None,
         pan_coverage_threshold: float = 0.6,

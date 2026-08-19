@@ -1,6 +1,6 @@
 """Database layer - SQLAlchemy 2.0 + psycopg (v3) + Alembic on PostgreSQL.
 
-Stack is mandated; see docs/DECISIONS.md ADR-012. The DSN scheme is
+Stack is mandated; see docs/DOCUMENTATION.md. The DSN scheme is
 `postgresql+psycopg://` - psycopg v3, not psycopg2. Mixing the two is a common
 and confusing failure, so the driver is named explicitly everywhere.
 

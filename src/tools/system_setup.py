@@ -749,7 +749,7 @@ def ensure_ocr(report: Report) -> None:
         report.add(Step("OCR (Surya)", Status.MISSING,
                         "no interpreter - scanned pages will be skipped",
                         time.monotonic() - started,
-                        "See docs/TRANSLATION.md for the OCR environment"))
+                        "See docs/DOCUMENTATION.md for the OCR environment"))
         return
     code, _ = _run([str(interpreter), "-c", "import surya"], timeout=180)
     report.add(Step("OCR (Surya)",

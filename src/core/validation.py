@@ -573,7 +573,7 @@ def _confidence(checks: list[FieldCheck]) -> float:
 
     Derived from validator outcomes rather than model log-probabilities:
     collecting per-token scores for an 8000-token generation needs ~8 GB and
-    OOMs even on a 16 GB GPU. See docs/DECISIONS.md ADR-008.
+    OOMs even on a 16 GB GPU. See docs/DOCUMENTATION.md.
     """
     scored = [c.confidence for c in checks if c.format_ok is not None or c.in_ocr is not None]
     return round(sum(scored) / len(scored), 3) if scored else 0.0

@@ -12,7 +12,7 @@ one-line change here.
     src/        the code - this file lives in it
     models/     weights, the Surya installation, prompts. Large, static.
     runtime/    everything written while running. Disposable; recreated on demand.
-    docs/       documentation and notes
+    docs/       DOCUMENTATION.md, and the generated installation report
     tests/      the suite and the sample corpus
 
 `runtime/` is separated from `models/` deliberately: one can be deleted to
