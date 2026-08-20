@@ -632,8 +632,13 @@ logged and recorded on the extraction row.
 
 ### Generation settings
 
-Temperature 0. `repetition_penalty` 1.1 to suppress runaway loops. `max_tokens`
-2048 against a measured average of 664 for legitimate output. `truncated: true`
+Temperature 0. **`repetition_penalty` is 1.0 — disabled, deliberately.** The
+old API document recommended 1.1 to suppress runaway loops, and that is wrong for
+this workload: a penalty suppresses the repeated key tokens that JSON array
+elements share, so it truncates the party list. Measured at 1.1 the model emitted
+3 of 5 persons and nulled `paid_in_cash`. Both `ExtractStage` and the server
+default to 1.0. `max_tokens` is 2048 against a measured average of 664 for
+legitimate output. `truncated: true`
 means the ceiling was hit, which on this workload usually indicates a repetition
 loop rather than a long answer — treated as a validation failure and routed to
 review.
