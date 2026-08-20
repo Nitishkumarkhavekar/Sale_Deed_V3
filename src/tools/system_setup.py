@@ -36,6 +36,7 @@ import ctypes
 import json
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -65,6 +66,11 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 #: for the database and cleaned copies. Used to warn, never to refuse -
 #: a machine with everything already present needs none of it.
 FULL_INSTALL_GB = 8
+
+#: Floor for offering vLLM, in GB as nvidia-smi reports it. Deliberately below
+#: 16 so that cards sold as 16 GB clear it; see `VLLM_MIN_VRAM_GIB` in the AI
+#: server, which this mirrors.
+VLLM_MIN_VRAM_GB = 15.5
 
 #: Directories the application expects. Created if absent, never cleaned - they
 #: hold user data.
@@ -150,6 +156,26 @@ def _log(message: str) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with (LOG_DIR / "installation.log").open("a", encoding="utf-8") as handle:
         handle.write(f"{stamp}  {message}\n")
+
+
+def _log_output(name: str, text: str) -> Path:
+    """Keep the whole output of a failed step, not a fragment of it.
+
+    Steps used to report a 60-character slice and discard the rest, which is
+    unusable on a machine you cannot reach: an install failed with the string
+    ``_pytest/cacheprovider`` and nothing else to go on.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = LOG_DIR / f"{name}.log"
+    path.write_text(text or "(no output)", encoding="utf-8", errors="replace")
+    return path
+
+
+#: pytest's terminal summary ("3 failed, 1620 passed in 41.2s"). Matched by
+#: shape, because matching any line containing "failed" picked up a warning
+#: about the cache path `.pytest_cache/v/cache/lastfailed` and reported that
+#: path as the result of the run.
+_PYTEST_SUMMARY = re.compile(r"\d+\s+(passed|failed|error|skipped)")
 
 
 def _run(command: list[str], timeout: float = 1800.0,
@@ -619,7 +645,11 @@ def ensure_vllm(report: Report, install: bool, system: dict) -> None:
                             f"ready in {VENV_DIR}", time.monotonic() - started))
             return
 
-    if vram < 16.0:
+    # Not 16.0. A card sold as 16 GB reports less than that to nvidia-smi -
+    # 16376 MiB on a 4060 Ti, 15360 MiB on a T4 - so a `< 16.0` test skipped
+    # the exact hardware this step prints as "16 GB VRAM" and the batch file
+    # documents as qualifying.
+    if vram < VLLM_MIN_VRAM_GB:
         report.add(Step(
             "vLLM engine", Status.SKIPPED,
             f"{vram:.0f} GB VRAM - llama.cpp serves this card",
@@ -751,12 +781,26 @@ def ensure_ocr(report: Report) -> None:
                         time.monotonic() - started,
                         "See docs/DOCUMENTATION.md for the OCR environment"))
         return
-    code, _ = _run([str(interpreter), "-c", "import surya"], timeout=180)
-    report.add(Step("OCR (Surya)",
-                    Status.FOUND if code == 0 else Status.MISSING,
-                    f"via {interpreter.parent.parent.name}" if code == 0
-                    else "interpreter present, surya not importable",
-                    time.monotonic() - started))
+    code, out = _run([str(interpreter), "-c", "import surya"], timeout=180)
+    if code == 0:
+        report.add(Step("OCR (Surya)", Status.FOUND,
+                        f"via {interpreter.parent.parent.name}",
+                        time.monotonic() - started))
+        return
+
+    # Say why. This reported "not importable" and threw the traceback away,
+    # which on a machine set up by copying the project from another drive left
+    # the operator with nothing to act on. The last line of a Python traceback
+    # names the missing module or the DLL that would not load.
+    reason = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
+    path = _log_output("surya-import", out)
+    report.add(Step("OCR (Surya)", Status.MISSING,
+                    f"interpreter present, surya not importable - {reason[:70]}",
+                    time.monotonic() - started,
+                    f"Full output: {path}\n"
+                    "A virtualenv records absolute paths and cannot be copied "
+                    "between machines or drives - it has to be rebuilt in "
+                    "place. See docs/DOCUMENTATION.md, the OCR environment."))
 
 
 # ---------------------------------------------------------------------------
@@ -846,13 +890,36 @@ def validate(report: Report) -> bool:
                     time.monotonic() - started))
 
     started = time.monotonic()
+    # pytest is a developer dependency; the six packages this file installs do
+    # not include it. Reporting a missing developer tool as a failed install
+    # sent an operator looking for a fault in the application that was not
+    # there.
+    if not _importable("pytest"):
+        report.add(Step("Test suite", Status.SKIPPED,
+                        "pytest not installed - not needed to run the application",
+                        time.monotonic() - started))
+        return passed
+
     code, out = _run([sys.executable, "-m", "pytest", str(paths.ROOT / "tests"), "-q"],
                      timeout=1800)
-    summary = next((ln for ln in reversed(out.splitlines())
-                    if "passed" in ln or "failed" in ln), "no result")
-    report.add(Step("Test suite",
-                    Status.FOUND if code == 0 else Status.FAILED,
-                    summary.strip()[:60], time.monotonic() - started))
+    summary = next((ln.strip() for ln in reversed(out.splitlines())
+                    if _PYTEST_SUMMARY.search(ln)), "")
+    if code == 0:
+        report.add(Step("Test suite", Status.FOUND, (summary or "passed")[:60],
+                        time.monotonic() - started))
+        return passed
+
+    # Not blocking. Preflight decides whether this machine can run the
+    # application, and it runs first; the test suite checks the source tree.
+    # Failing a customer install on it meant a warning that pytest could not
+    # create its own cache directory stopped a working installation.
+    path = _log_output("test-suite", out)
+    report.add(Step("Test suite", Status.MISSING,
+                    summary[:60] or "pytest reported no summary",
+                    time.monotonic() - started,
+                    f"Full output: {path}\n"
+                    "The application is unaffected - preflight is the gate. "
+                    "Re-run with --skip-tests to leave this out."))
     return passed
 
 

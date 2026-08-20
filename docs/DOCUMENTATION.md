@@ -561,6 +561,27 @@ the recognised text and the bounding boxes.
 The recognition model is multilingual and takes no language argument, which is
 why there is no OCR language setting.
 
+### Installing it on another machine
+
+The environment cannot be copied. A virtualenv records the absolute path it was
+built at, so `models/SuryaOCR/venv_new` carried from `D:\saledeed v3` to
+`E:\saledeed v3` leaves an interpreter that starts and then cannot import
+`surya`. Setup reports this as *interpreter present, surya not importable* and
+writes the traceback to `runtime/logs/setup/surya-import.log`.
+
+Rebuild it in place on the target machine:
+
+```
+rmdir /s /q "models\SuryaOCR\venv_new"
+py -3.12 -m venv "models\SuryaOCR\venv_new"
+"models\SuryaOCR\venv_new\Scripts\python.exe" -m pip install surya-ocr==0.17.1 transformers==4.57.1
+```
+
+Surya downloads its recognition weights on first use, so the machine needs
+network access once. Without this environment scanned pages are skipped and
+only PDFs with a real text layer are processed — most Kaveri deeds are scans,
+so this is not optional in practice.
+
 ### Cleanup
 
 `core/ocr_cleanup.py` normalises raw OCR into what the model was finetuned on:

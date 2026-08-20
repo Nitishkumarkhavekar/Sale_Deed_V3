@@ -555,7 +555,10 @@ def make_http_server(app: AiServer, host: str, port: int) -> ThreadingHTTPServer
 #: front - so a card that merely *fits* the weights still fails at startup. 16
 #: GiB is the first size with room for both plus the headroom PagedAttention
 #: wants.
-VLLM_MIN_VRAM_GIB = 16.0
+#: 15.5, not 16.0: nvidia-smi reports a 16 GB card as 16376 MiB (15.99 GiB)
+#: and a T4 as 15360 MiB (15.0), so a 16.0 floor rejected every card the
+#: paragraph above is describing.
+VLLM_MIN_VRAM_GIB = 15.5
 
 
 def choose_engine(hw: Any = None, *, vllm_python: str | None = None) -> str:
