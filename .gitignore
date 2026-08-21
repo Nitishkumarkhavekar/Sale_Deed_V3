@@ -78,3 +78,9 @@ env/
 Thumbs.db
 desktop.ini
 $RECYCLE.BIN/
+
+# -- Generated per-machine ---------------------------------------------------
+# Written by System Setup so an operator can read what this machine resolved
+# to. Machine-specific by definition, and the AI server recomputes it at every
+# start - committing one machine's answer would only mislead the next.
+config/hardware_profile.json
