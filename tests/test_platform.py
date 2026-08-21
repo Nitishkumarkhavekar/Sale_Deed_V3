@@ -666,13 +666,13 @@ class TestSupervisedChildrenCanActuallyStart:
 
 
 class TestSystemSetupShim:
-    """`System Setup.bat` and the script behind it. R-046.
+    """`system_setup.bat` and the script behind it. R-046.
 
     The shim is 97 lines of batch and gets no test coverage from anything else,
     so the parts that can be checked as text are checked here.
     """
 
-    BAT = ROOT / "System Setup.bat"
+    BAT = ROOT / "system_setup.bat"
     SCRIPT = ROOT / "src" / "tools" / "system_setup.py"
 
     def test_the_shim_exists_and_delegates(self):

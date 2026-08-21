@@ -28,7 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = ROOT / "requirements.txt"
 LOCK = ROOT / "requirements.lock.txt"
-SETUP_BAT = ROOT / "System Setup.bat"
+SETUP_BAT = ROOT / "system_setup.bat"
 SETUP_PY = ROOT / "src" / "tools" / "system_setup.py"
 
 

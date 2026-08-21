@@ -25,8 +25,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-FORWARDER = ROOT / "system_setup.bat"
-SETUP_BAT = ROOT / "System Setup.bat"
+SETUP_BAT = ROOT / "system_setup.bat"
 
 #: A drive letter followed by a separator - the thing that stops a project
 #: working after it is copied somewhere else. The letter must stand alone:
@@ -36,30 +35,46 @@ DRIVE_LETTER = re.compile("(?<![A-Za-z])[A-Za-z]:[" + chr(92) + "/]")
 
 
 class TestEntryPoint:
-    """`system_setup.bat`, the name a runbook would type."""
+    """`system_setup.bat` - the single user-facing installer.
+
+    There were briefly two: this file and "System Setup.bat", one forwarding to
+    the other. Two names for one installer is a thing to explain rather than a
+    thing to have, so the logic lives here and the other name is gone.
+    """
 
     def test_it_exists(self):
-        assert FORWARDER.is_file()
+        assert SETUP_BAT.is_file()
 
-    def test_it_forwards_to_the_installer_the_shortcut_uses(self):
-        """One installer, two names. A second implementation would drift."""
-        body = FORWARDER.read_text(encoding="utf-8")
-        assert "System Setup.bat" in body
-        assert "%*" in body, "arguments must reach the installer"
+    def test_there_is_only_one_installer(self):
+        """The old name must not come back alongside this one."""
+        rivals = [p.name for p in ROOT.glob("*.bat")
+                  if p.name.lower().replace(" ", "_") == "system_setup.bat"]
+        assert rivals == ["system_setup.bat"], rivals
+
+    def test_it_runs_the_setup_inside_the_project_environment(self):
+        """Installing into whatever interpreter happened to launch the file is
+        how packages end up in a machine's system Python."""
+        body = SETUP_BAT.read_text(encoding="utf-8")
+        assert "%VENV_PY%" in body
+        assert "src" in body and "system_setup.py" in body
+
+    def test_it_forwards_its_arguments(self):
+        """--report-only and --skip-tests have to reach the Python behind it."""
+        assert "%*" in SETUP_BAT.read_text(encoding="utf-8")
 
     def test_it_preserves_the_exit_code(self):
         """An installer that always exits 0 cannot be used unattended."""
-        assert "%ERRORLEVEL%" in FORWARDER.read_text(encoding="utf-8")
+        assert "%ERRORLEVEL%" in SETUP_BAT.read_text(encoding="utf-8")
 
     def test_it_resolves_paths_from_its_own_folder(self):
-        assert "%~dp0" in FORWARDER.read_text(encoding="utf-8")
+        assert "%~dp0" in SETUP_BAT.read_text(encoding="utf-8")
 
-    @pytest.mark.parametrize("path", [FORWARDER, SETUP_BAT])
-    def test_no_hard_coded_drive_letters(self, path):
+    def test_no_hard_coded_drive_letters(self):
         """The project may be installed anywhere. Comments are exempt: the
         header explains the rule by naming the paths it forbids."""
         offenders = []
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for number, line in enumerate(
+                SETUP_BAT.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if stripped.upper().startswith("REM") or stripped.startswith("::"):
                 continue
@@ -70,8 +85,8 @@ class TestEntryPoint:
     def test_it_is_readable_by_cmd(self):
         """CRLF and ASCII. A batch file saved as UTF-8 with a BOM fails on the
         first line, and one saved with bare LF breaks multi-line blocks."""
-        raw = FORWARDER.read_bytes()
-        assert not raw.startswith(b"" + bytes([0xEF, 0xBB, 0xBF])), "BOM"
+        raw = SETUP_BAT.read_bytes()
+        assert not raw.startswith(bytes([0xEF, 0xBB, 0xBF])), "BOM"
         assert bytes([13, 10]) in raw, "needs CRLF"
         raw.decode("ascii")
 
@@ -287,3 +302,71 @@ class TestLauncherDistinguishesTheOccupant:
             port = probe.getsockname()[1]
 
         assert check_port(self._config(port)).outcome is Outcome.OK
+
+
+class TestTheEnginePortIsCheckedToo:
+    """The AI server binds the configured port and gives its inference engine
+    `port + 1`. Checking only the first let a machine install cleanly with the
+    engine's port taken, and llama-server then exited during startup while the
+    window reported the AI server as offline."""
+
+    def test_a_conflict_on_only_the_engine_port_is_caught(self, monkeypatch):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "src"))
+        from tools.system_setup import Report, Status, ensure_ports
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+            held.bind(("127.0.0.1", 0))
+            held.listen(1)
+            engine_port = held.getsockname()[1]
+            monkeypatch.setenv("SALEDEED_AI_URL",
+                               f"http://127.0.0.1:{engine_port - 1}")
+            report = Report()
+            ensure_ports(report)
+
+        step = report.steps[-1]
+        assert step.status is Status.MISSING
+        assert str(engine_port) in step.detail
+        assert "inference engine" in step.remedy
+
+    def test_the_suggested_port_is_not_the_engine_port(self, monkeypatch):
+        """The remedy used to offer `port + 1`, which is the engine's own port
+        and the reason this check exists."""
+        import re as _re
+        import sys
+
+        sys.path.insert(0, str(ROOT / "src"))
+        from tools.system_setup import Report, ensure_ports
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+            held.bind(("127.0.0.1", 0))
+            held.listen(1)
+            port = held.getsockname()[1]
+            monkeypatch.setenv("SALEDEED_AI_URL", f"http://127.0.0.1:{port}")
+            report = Report()
+            ensure_ports(report)
+
+        suggested = _re.search(r"SALEDEED_AI_URL=http://[^:]+:(\d+)",
+                               report.steps[-1].remedy)
+        assert suggested, report.steps[-1].remedy
+        assert int(suggested.group(1)) not in (port, port + 1)
+
+    def test_the_launcher_checks_the_engine_port_as_well(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "src"))
+        from launcher.config import build_config
+        from launcher.steps import Outcome, check_port
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+            held.bind(("127.0.0.1", 0))
+            held.listen(1)
+            engine_port = held.getsockname()[1]
+            cfg = build_config(ROOT)
+            object.__setattr__(cfg, "ai_host", "127.0.0.1")
+            object.__setattr__(cfg, "ai_port", engine_port - 1)
+            result = check_port(cfg)
+
+        assert result.outcome is Outcome.FAIL
+        assert str(engine_port) in result.detail

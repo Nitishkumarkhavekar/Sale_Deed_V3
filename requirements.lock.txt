@@ -12,7 +12,7 @@
 #
 #     .venv\Scripts\python.exe -m pip install -r requirements.lock.txt
 #
-# It is deliberately NOT what "System Setup.bat" installs. A lock file is a
+# It is deliberately NOT what system_setup.bat installs. A lock file is a
 # record of one machine's resolution; installing from it on a different Python
 # minor version fails on a wheel that does not exist there, and a setup that
 # cannot complete is worse than one that resolves a patch version differently.
@@ -23,7 +23,7 @@
 #   * vLLM     models\vllm-env           - pins transformers>=5.5.3
 #
 # Those two pin the same package to incompatible versions, which is why there
-# are three environments rather than one. Both are built by System Setup.bat.
+# are three environments rather than one. Both are built by system_setup.bat.
 
 alembic==1.18.5
 annotated-doc==0.0.5

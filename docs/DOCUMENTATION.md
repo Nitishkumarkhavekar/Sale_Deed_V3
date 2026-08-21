@@ -84,7 +84,7 @@ opens the window. On shutdown it stops what it started.
 On a machine that has never run this before:
 
 ```
-System Setup.bat
+system_setup.bat
 ```
 
 | Command | Does |
@@ -93,9 +93,9 @@ System Setup.bat
 | `py -3.13 launcher.py --no-ai` | browsing and export, no inference |
 | `py -3.13 launcher.py --headless` | services without the window |
 | `py -3.13 launcher.py --verbose` | follow the AI server's log in this terminal |
-| `System Setup.bat --report-only` | detect and report, change nothing |
-| `System Setup.bat --no-launch` | set up but do not start |
-| `System Setup.bat --skip-tests` | skip the test suite during setup |
+| `system_setup.bat --report-only` | detect and report, change nothing |
+| `system_setup.bat --no-launch` | set up but do not start |
+| `system_setup.bat --skip-tests` | skip the test suite during setup |
 
 ### The operator's workflow
 
@@ -132,7 +132,7 @@ AMD adapter, so a CUDA build is structurally incapable of selecting it.
 
 ## 4. Installation
 
-`System Setup.bat` is a shim; all logic is in `src/tools/system_setup.py`,
+`system_setup.bat` is a shim; all logic is in `src/tools/system_setup.py`,
 because batch is unreadable and untestable at any size worth writing.
 `system_setup.bat` is the same installer under a name without a space, for
 runbooks and unattended installs; it forwards every argument and preserves the
@@ -211,7 +211,7 @@ notice. Setup checks the files are present and correct; it does not fetch them.
 ### Deployment to another machine
 
 Copy the whole project directory, including `models/`, then run
-`System Setup.bat`. `.env` is **not** copied — setup writes a fresh one with a
+`system_setup.bat`. `.env` is **not** copied — setup writes a fresh one with a
 generated password matching the database it creates.
 
 ---
@@ -1103,7 +1103,7 @@ overridable by environment variable for a single run. `.env` at the project root
 is read by every entry point.
 
 **`.env` is never committed.** It is in `.gitignore` because it holds the database
-credential. `System Setup.bat` writes it with a freshly generated 20-character
+credential. `system_setup.bat` writes it with a freshly generated 20-character
 password and restricts it to the installing user.
 
 ### Database

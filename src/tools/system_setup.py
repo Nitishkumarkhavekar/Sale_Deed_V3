@@ -1,6 +1,6 @@
 """One-command system setup: detect, install what is missing, verify, launch.
 
-    "System Setup.bat"                 everything, then start the application
+    system_setup.bat                 everything, then start the application
     py -3.13 tools/system_setup.py     the same, directly
     ... --report-only                  detect and report, change nothing
     ... --no-launch                    set up but do not start
@@ -491,13 +491,13 @@ def _report_environment(report: Report) -> None:
     report.add(Step(
         "Environment", Status.MISSING,
         "not a virtual environment - packages would go system-wide",
-        remedy='run "System Setup.bat", which builds .venv and uses it'))
+        remedy='run system_setup.bat, which builds .venv and uses it'))
 
 
 def ensure_packages(report: Report, install: bool) -> None:
     """Install `requirements.txt` into the interpreter running this script.
 
-    Which is the project's own `.venv`: `System Setup.bat` creates it and runs
+    Which is the project's own `.venv`: `system_setup.bat` creates it and runs
     this file with it, so every install here - and every migration, check and
     subprocess below, all of which use `sys.executable` - lands inside it and
     the machine's Python is left as it was found.
@@ -992,7 +992,14 @@ def _port_holder(port: int) -> str:
 
 
 def ensure_ports(report: Report) -> None:
-    """Check the AI server's port before the application blames the server.
+    """Check every port the application binds, before it blames the AI server.
+
+    Two, not one. The AI server binds the configured port and hands its
+    inference engine `port + 1` (`server.py`, where LlamaCppEngine and
+    VllmEngine are constructed). Checking only the first passed a machine where
+    the second was taken, and the failure then arrived as llama-server exiting
+    during startup - reported by the window as the AI server being offline,
+    which is the one thing it was not.
 
     Nothing is killed and nothing is reassigned. A port chosen automatically
     here would have to be written into `.env` to be honoured, and an installer
@@ -1001,39 +1008,46 @@ def ensure_ports(report: Report) -> None:
     """
     started = time.monotonic()
     port = resolve_ai_port()
+    engine_port = port + 1
 
-    if _port_free(port):
-        report.add(Step("Ports", Status.FOUND, f"{port} available",
-                        time.monotonic() - started))
-        return
+    def held_by_us(number: int) -> bool:
+        """Our own server answering is the ordinary case when setup runs while
+        the application is open. That is not a conflict."""
+        try:
+            import urllib.request
 
-    holder = _port_holder(port)
-    # Our own AI server answering on it is the ordinary case when setup is run
-    # while the application is open. That is not a conflict.
-    ours = False
-    try:
-        import urllib.request
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{number}/health", timeout=3) as response:
+                return b"status" in response.read(200).lower()
+        except Exception:  # noqa: BLE001
+            return False
 
-        with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/health", timeout=3) as response:
-            ours = b"status" in response.read(200).lower()
-    except Exception:  # noqa: BLE001
-        ours = False
+    conflicts = []
+    for number, role in ((port, "AI server"), (engine_port, "inference engine")):
+        if _port_free(number) or held_by_us(number):
+            continue
+        conflicts.append((number, role, _port_holder(number)))
 
-    if ours:
+    if not conflicts:
         report.add(Step("Ports", Status.FOUND,
-                        f"{port} held by this application, already running",
+                        f"{port} and {engine_port} available",
                         time.monotonic() - started))
         return
 
+    detail = ", ".join(f"{number} in use by {holder}"
+                       for number, _role, holder in conflicts)
+    roles = " and ".join(role for _number, role, _holder in conflicts)
+    # Suggest a pair that is clear of both, not `port + 1` - which is the
+    # engine's own port and the reason this check exists.
+    suggestion = port + 13
     report.add(Step(
-        "Ports", Status.MISSING,
-        f"{port} is in use by {holder}",
+        "Ports", Status.MISSING, detail[:60],
         time.monotonic() - started,
-        "The AI server cannot bind this port, and the application will "
-        'report "AI server offline" when it starts.\n'
-        "Close that process, or choose another port by setting it in .env:\n"
-        "    SALEDEED_AI_URL=http://127.0.0.1:8078\n"
+        f"The {roles} cannot bind, and the application will report\n"
+        '"AI server offline" when it starts.\n'
+        "Close the process above, or move this application to a free pair by\n"
+        "setting the first of them in .env - the engine takes the next one up:\n"
+        f"    SALEDEED_AI_URL=http://127.0.0.1:{suggestion}\n"
         "Nothing was killed and nothing was changed for you - the process "
         "holding it may be one you need."))
 
@@ -1261,7 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\n  Not running as administrator, and these need it:")
             for label in needs_admin:
                 print(f"    - {label}")
-            print("  Right-click \"System Setup.bat\" and choose "
+            print("  Right-click \"system_setup.bat\" and choose "
                   "\"Run as administrator\", or install those two by hand.")
             _log(f"not elevated; installs needing admin: {', '.join(needs_admin)}")
 
