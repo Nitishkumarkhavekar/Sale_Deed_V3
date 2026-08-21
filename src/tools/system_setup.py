@@ -180,7 +180,8 @@ def _log_output(name: str, text: str) -> Path:
 #: shape, because matching any line containing "failed" picked up a warning
 #: about the cache path `.pytest_cache/v/cache/lastfailed` and reported that
 #: path as the result of the run.
-_PYTEST_SUMMARY = re.compile(r"\d+\s+(passed|failed|error|skipped)")
+_PYTEST_SUMMARY = re.compile(
+    r"\d+\s+(?:passed|failed|error|errors|skipped|xfailed|xpassed)")
 
 
 def _run(command: list[str], timeout: float = 1800.0,
@@ -312,7 +313,12 @@ def print_system(info: dict) -> None:
         ("Disk", f"{info.get('disk_free_gb', '?')} GB free of "
                  f"{info.get('disk_total_gb', '?')} GB"),
         ("GPU", info.get("gpu", "unknown")),
-        ("CUDA", info.get("cuda_version") or "not available"),
+        # A driver can report CUDA support without naming a version.
+        # Printing "not available" there says the machine cannot do
+        # GPU inference, which is the opposite of true.
+        ("CUDA", info.get("cuda_version")
+                 or ("available, version unreported"
+                     if info.get("cuda_available") else "not available")),
         ("Driver", info.get("driver_version") or "-"),
         ("Internet", "reachable" if info.get("internet") else "unreachable"),
         ("Git", info.get("git")),
@@ -1077,6 +1083,21 @@ def ensure_configuration(report: Report, dsn: str, install: bool,
 # ---------------------------------------------------------------------------
 
 
+def _pytest_summary(out: str) -> str:
+    """The counts, plus the error that stopped them when there was one.
+
+    A run that dies during collection prints no count line at all, so reporting
+    only the counts left "no result" against a failure that had a perfectly
+    good explanation two lines further up. The "E   " line carries it.
+    """
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    counts = next((ln for ln in reversed(lines) if _PYTEST_SUMMARY.search(ln)), "")
+    reason = next((ln[1:].strip() for ln in reversed(lines)
+                   if ln.startswith("E   ")), "")
+    detail = " - ".join(part for part in (counts, reason) if part)
+    return (detail or "no result")[:200]
+
+
 def validate(report: Report) -> bool:
     """Run the checks that already exist rather than inventing new ones."""
     print("\n  Validation")
@@ -1106,8 +1127,7 @@ def validate(report: Report) -> bool:
 
     code, out = _run([sys.executable, "-m", "pytest", str(paths.ROOT / "tests"), "-q"],
                      timeout=1800)
-    summary = next((ln.strip() for ln in reversed(out.splitlines())
-                    if _PYTEST_SUMMARY.search(ln)), "")
+    summary = _pytest_summary(out)
     if code == 0:
         report.add(Step("Test suite", Status.FOUND, (summary or "passed")[:60],
                         time.monotonic() - started))

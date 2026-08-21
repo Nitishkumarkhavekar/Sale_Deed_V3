@@ -136,7 +136,12 @@ if not defined PYEXE (
         pause
         exit /b 1
     )
-    echo   Python installed: %PYEXE%
+    REM  !PYEXE!, not %PYEXE%. PYEXE is assigned inside this same
+    REM  parenthesised block, and %VAR% is substituted when the block is
+    REM  parsed - before any of it runs - so this printed the value PYEXE
+    REM  had on the way in, which is none. Only visible on a machine
+    REM  where Python had to be installed, which is never this one.
+    echo   Python installed: !PYEXE!
     echo.
 )
 

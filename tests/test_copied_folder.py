@@ -207,3 +207,65 @@ class TestOfflineIsRefusedBeforeItStarts:
 
         source = inspect.getsource(ss._rebuild_surya)
         assert "text layer" in source
+
+
+class TestFixesFoundOnTheOtherMachine:
+    """Three corrections that existed only on the E: install until now.
+
+    They were made against an 18 August base while this tree moved on, so
+    neither side had all of the work. These are the E: half.
+    """
+
+    def test_the_batch_file_uses_delayed_expansion_for_pyexe(self):
+        """PYEXE is assigned inside that parenthesised block, and %VAR% is
+        substituted when the block is parsed - before any of it runs - so the
+        line printed the value PYEXE had on the way in, which is none. Visible
+        only on a machine where Python had to be installed."""
+        body = (ROOT / "System Setup.bat").read_text(encoding="utf-8")
+        assert "Python installed: !PYEXE!" in body
+        assert "Python installed: %PYEXE%" not in body
+
+    def test_cuda_without_a_version_is_not_reported_as_unavailable(self):
+        """A driver can report CUDA support without naming a version. Printing
+        "not available" says the machine cannot do GPU inference at all."""
+        import inspect
+
+        from tools import system_setup as ss
+
+        source = inspect.getsource(ss.print_system)
+        assert "version unreported" in source
+        assert "cuda_available" in source
+
+    def test_a_collection_error_reports_its_reason(self):
+        """A run that dies during collection prints no count line, so the
+        report said "no result" against a failure that had a perfectly good
+        explanation two lines up."""
+        from tools.system_setup import _pytest_summary
+
+        out = chr(10).join([
+            "ERROR collecting tests/test_x.py",
+            "E   ImportError: cannot import name 'foo'",
+            "1 error in 0.42s",
+        ])
+        summary = _pytest_summary(out)
+        assert "ImportError" in summary
+        assert "1 error" in summary
+
+    def test_an_ordinary_run_still_reports_its_counts(self):
+        from tools.system_setup import _pytest_summary
+
+        assert "1628 passed" in _pytest_summary("1628 passed, 8 skipped in 88.5s")
+
+    def test_the_cache_warning_is_still_not_mistaken_for_a_result(self):
+        """`.pytest_cache/v/cache/lastfailed` contains the word "failed"."""
+        from tools.system_setup import _pytest_summary
+
+        out = "PytestCacheWarning: could not create cache path .../cache/lastfailed"
+        assert _pytest_summary(out) == "no result"
+
+    def test_the_pattern_contains_no_stray_control_characters(self):
+        """Written through a heredoc once, `\b` arrived as a backspace byte and
+        the pattern silently matched nothing."""
+        from tools.system_setup import _PYTEST_SUMMARY
+
+        assert not [c for c in _PYTEST_SUMMARY.pattern if ord(c) < 32]
