@@ -67,6 +67,11 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 #: a machine with everything already present needs none of it.
 FULL_INSTALL_GB = 8
 
+#: Named rather than escaped, so a heredoc or an editor cannot
+#: quietly turn one into the other.
+DOUBLE_QUOTE = chr(34)
+SINGLE_QUOTE = chr(39)
+
 #: Floor for offering vLLM, in GB as nvidia-smi reports it. Deliberately below
 #: 16 so that cards sold as 16 GB clear it; see `VLLM_MIN_VRAM_GIB` in the AI
 #: server, which this mirrors.
@@ -669,6 +674,24 @@ def ensure_vllm(report: Report, install: bool, system: dict) -> None:
                         time.monotonic() - started))
         return
 
+    # Present but not working means copied from another machine - the same
+    # state .venv and the OCR environment arrive in. Reaching pip through a
+    # broken interpreter fails with a message about pip, so the environment is
+    # replaced first rather than installed into.
+    if python.is_file():
+        code, _ = _run([str(python), "-c", "import sys"], timeout=60)
+        if code != 0:
+            print(f"      {VENV_DIR} does not run - rebuilding it for this machine")
+            shutil.rmtree(env_dir, ignore_errors=True)
+            if env_dir.exists():
+                report.add(Step("vLLM engine", Status.MISSING,
+                                f"{VENV_DIR} is in use and could not be replaced",
+                                time.monotonic() - started,
+                                "Close any Python window using it and run this "
+                                "file again. llama.cpp serves the model "
+                                "meanwhile."))
+                return
+
     if not python.is_file():
         code, out = _run([sys.executable, "-m", "venv", str(env_dir)], timeout=600)
         if code != 0:
@@ -1127,7 +1150,11 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     report = Report()
 
-    password = args.db_password or _generate_password()
+    # Order matters: an explicit flag, then whatever this project is
+    # already configured with, then a new one. The middle term is what
+    # makes a copied folder work.
+    password = (args.db_password or _password_from_env_file()
+                or _generate_password())
     sys.path.insert(0, str(ROOT))
     db_settings = {"SALEDEED_DB_HOST": args.db_host,
                    "SALEDEED_DB_PORT": args.db_port,
@@ -1270,6 +1297,46 @@ def main(argv: list[str] | None = None) -> int:
               "completed - see runtime/logs/launcher.log for the application.")
         _log(f"application exited with code {code} (setup was successful)")
     return 0
+
+
+def _password_from_env_file() -> str:
+    """The database password this project is already configured to use.
+
+    A copied project folder brings its `.env` with it. Generating a fresh
+    password and creating the role with that leaves `.env` naming a password
+    the database does not have - and `.env` is deliberately never overwritten,
+    so there is nothing later in the run that can reconcile the two. The
+    install ends with "PostgreSQL not reachable after install" and a connection
+    string that cannot ever work, on a machine where everything else succeeded.
+
+    Reusing what is already written is what keeps the two halves agreeing.
+    Returns "" when there is no `.env`, which is the fresh-machine case.
+    """
+    env_file = paths.ROOT / ".env"
+    if not env_file.is_file():
+        return ""
+    try:
+        text = env_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    quotes = DOUBLE_QUOTE + SINGLE_QUOTE
+    for line in text.splitlines():
+        line = line.strip().removeprefix("export ").strip()
+        if line.startswith("SALEDEED_DB_PASSWORD="):
+            return line.partition("=")[2].strip().strip(quotes)
+        if line.startswith("SALEDEED_DB_URL="):
+            from urllib.parse import unquote, urlsplit
+
+            url = line.partition("=")[2].strip().strip(quotes)
+            try:
+                parsed = urlsplit(url)
+            except ValueError:
+                continue
+            if parsed.password:
+                # build_dsn percent-quotes it on the way in.
+                return unquote(parsed.password)
+    return ""
 
 
 def _generate_password() -> str:
