@@ -242,3 +242,48 @@ class TestPortConflictIsReported:
         ensure_ports(report)
         assert report.steps[-1].status is Status.FOUND
         assert not report.failures
+
+
+class TestLauncherDistinguishesTheOccupant:
+    """A busy port is only "reuse that server" when it *is* that server."""
+
+    def _config(self, port):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "src"))
+        from launcher.config import build_config
+
+        cfg = build_config(ROOT)
+        object.__setattr__(cfg, "ai_port", port)
+        object.__setattr__(cfg, "ai_host", "127.0.0.1")
+        return cfg
+
+    def test_a_stranger_on_the_port_fails_rather_than_being_reused(self):
+        """Reusing it let the UI talk to a foreign process and then report
+        "AI server offline" against a server that was never ours."""
+        import sys
+
+        sys.path.insert(0, str(ROOT / "src"))
+        from launcher.steps import Outcome, check_port
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as stranger:
+            stranger.bind(("127.0.0.1", 0))
+            stranger.listen(1)
+            port = stranger.getsockname()[1]
+            result = check_port(self._config(port))
+
+        assert result.outcome is Outcome.FAIL
+        assert "not this application" in result.detail
+        assert "SALEDEED_AI_URL" in result.remedy
+
+    def test_a_free_port_is_ok(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "src"))
+        from launcher.steps import Outcome, check_port
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        assert check_port(self._config(port)).outcome is Outcome.OK

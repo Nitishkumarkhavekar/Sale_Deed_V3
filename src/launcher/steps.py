@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import urllib.request
 import subprocess
 import sys
 from collections.abc import Callable
@@ -346,15 +347,43 @@ def check_hardware(cfg: LauncherConfig) -> Result:
 
 
 def check_port(cfg: LauncherConfig) -> Result:
-    """A port already in use usually means a previous run did not exit."""
+    """A port already in use usually means a previous run did not exit.
+
+    Usually, not always. This reported "reusing that server" for anything at
+    all listening on the port, which is right when the occupant is a previous
+    run of this application and wrong in an expensive way when it is not: the
+    launcher proceeds, the UI talks to a stranger, and the failure surfaces as
+    "AI server offline" against a server that was never ours. One request to
+    /health separates the two cases.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.4)
         free = sock.connect_ex((cfg.ai_host, cfg.ai_port)) != 0
     if free:
         return _ok(f"port {cfg.ai_port} available")
-    return _warn(f"port {cfg.ai_port} is already in use - reusing that server",
-                 "Close the other instance if this is unexpected.",
-                 reuse=True)
+
+    try:
+        with urllib.request.urlopen(
+                f"http://{cfg.ai_host}:{cfg.ai_port}/health", timeout=2) as response:
+            ours = b"status" in response.read(400).lower()
+    except Exception:  # noqa: BLE001
+        ours = False
+
+    if ours:
+        return _warn(f"port {cfg.ai_port} already serves this application "
+                     "- reusing that server",
+                     "Close the other instance if this is unexpected.",
+                     reuse=True)
+
+    return _fail(
+        f"port {cfg.ai_port} is held by something that is not this application",
+        "Whatever is listening there did not answer /health, so the AI server "
+        "cannot start and the window would report it as offline.\n"
+        "Find the process:\n"
+        f"    Get-NetTCPConnection -LocalPort {cfg.ai_port} -State Listen\n"
+        "Close it, or move this application to another port in .env:\n"
+        f"    SALEDEED_AI_URL=http://{cfg.ai_host}:{cfg.ai_port + 1}",
+        reuse=False)
 
 
 #: Order matters: cheap local checks first, so a broken checkout fails in
