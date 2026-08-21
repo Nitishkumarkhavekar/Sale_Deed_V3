@@ -558,6 +558,21 @@ def ensure_packages(report: Report, install: bool) -> None:
         (out.strip().splitlines()[-1][:100] if still and out.strip() else "")))
 
 
+def _online(timeout: float = 3.0) -> bool:
+    """Can this machine reach the internet at all?
+
+    Asked before starting a rebuild rather than during one. A 2.5 GB download
+    that dies a third of the way through leaves a half-populated environment
+    and a pip error about a connection reset, which reads as a broken package
+    rather than as no network.
+    """
+    try:
+        with socket.create_connection(("1.1.1.1", 53), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _importable(module: str) -> bool:
     code, _ = _run([sys.executable, "-c", f"import {module}"], timeout=90)
     return code == 0
@@ -575,6 +590,27 @@ def ensure_database(report: Report, install: bool, password: str) -> bool:
                       "--check"], timeout=180)
     if code == 0:
         _apply_migrations(report)
+        return False
+
+    # Why it failed decides what to do about it. Installing PostgreSQL onto a
+    # machine that already runs it - which is what this did for every kind of
+    # failure - cannot fix a password, and the run ended with "not reachable
+    # after install" on a server that was up the whole time.
+    if re.search("password authentication failed", out, re.IGNORECASE):
+        report.add(Step(
+            "PostgreSQL", Status.FAILED,
+            "running, but it rejected the password in .env",
+            time.monotonic() - started,
+            "PostgreSQL is installed and answering. The role exists with a "
+            "different password, so this is a credentials mismatch, not a "
+            "missing server - installing it again would not help and is not "
+            "attempted.\n"
+            "Either put the real password into .env:\n"
+            "    SALEDEED_DB_URL=postgresql+psycopg://saledeed:PASSWORD@localhost:5432/saledeed\n"
+            "or set the role to match what .env already says, as postgres:\n"
+            "    psql -U postgres -c \"ALTER ROLE saledeed WITH PASSWORD 'THE-ONE-IN-DOT-ENV'\"\n"
+            "Nothing was changed for you: this database may belong to "
+            "something else."))
         return False
 
     if not install:
@@ -855,6 +891,18 @@ def _rebuild_surya(report: Report, started: float, why: str) -> None:
                         time.monotonic() - started,
                         "Restore requirements-ocr.txt from the repository, then "
                         "run this file again."))
+        return
+
+    if not _online():
+        report.add(Step(
+            "OCR (Surya)", Status.MISSING,
+            f"{why} - and this machine is offline",
+            time.monotonic() - started,
+            "Rebuilding the OCR environment needs about 2.5 GB from the "
+            "network, so it cannot be done here.\n"
+            "The application still starts and processes PDFs that carry a "
+            "text layer; scanned pages are skipped until this is built.\n"
+            "Connect the machine and run this file again."))
         return
 
     code, _ = _run(["py", "-3.12", "-c", "import sys"], timeout=25)

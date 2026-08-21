@@ -115,3 +115,95 @@ class TestForeignEnvironmentsAreReplaced:
     def test_the_application_environment_is_rebuilt_by_the_batch_file(self):
         body = (ROOT / "System Setup.bat").read_text(encoding="utf-8")
         assert "Rebuilding it for this one" in body
+
+
+class TestAnExistingPostgresIsDiagnosedNotReinstalled:
+    """A machine that already runs PostgreSQL is the common case in an office,
+    and the old code answered every kind of failure by installing it again -
+    which cannot fix a password, and ended the run with "not reachable after
+    install" against a server that was up the whole time."""
+
+    def test_a_rejected_password_does_not_trigger_an_install(self, monkeypatch):
+        from tools import system_setup as ss
+
+        calls = []
+
+        def fake_run(command, *a, **k):
+            calls.append(command)
+            return 1, 'FATAL:  password authentication failed for user "saledeed"'
+
+        monkeypatch.setattr(ss, "_run", fake_run)
+        report = ss.Report()
+        created = ss.ensure_database(report, install=True, password="new-one")
+
+        assert created is False
+        assert len(calls) == 1, "must stop after the check, not go on to install"
+        joined = " ".join(" ".join(str(part) for part in c) for c in calls)
+        assert "--install-database" not in joined
+
+    def test_it_says_which_of_the_two_fixes_to_apply(self, monkeypatch):
+        from tools import system_setup as ss
+
+        monkeypatch.setattr(
+            ss, "_run",
+            lambda *a, **k: (1, "FATAL: password authentication failed"))
+        report = ss.Report()
+        ss.ensure_database(report, install=True, password="x")
+
+        step = report.steps[-1]
+        assert step.status is ss.Status.FAILED
+        assert "ALTER ROLE" in step.remedy
+        assert ".env" in step.remedy
+
+    def test_it_changes_nothing_by_itself(self, monkeypatch):
+        """The database may belong to something else on that machine."""
+        from tools import system_setup as ss
+
+        monkeypatch.setattr(
+            ss, "_run",
+            lambda *a, **k: (1, "FATAL: password authentication failed"))
+        report = ss.Report()
+        ss.ensure_database(report, install=True, password="x")
+        assert "Nothing was changed" in report.steps[-1].remedy
+
+
+class TestOfflineIsRefusedBeforeItStarts:
+    """A 2.5 GB download that dies part-way leaves a half-populated
+    environment and a pip error about a connection reset, which reads as a
+    broken package rather than as no network."""
+
+    def test_the_probe_answers_without_raising(self):
+        from tools.system_setup import _online
+
+        assert isinstance(_online(timeout=1.0), bool)
+
+    def test_a_rebuild_is_refused_and_deletes_nothing(self, tmp_path, monkeypatch):
+        from tools import system_setup as ss
+
+        victim = tmp_path / "venv_new"
+        victim.mkdir()
+        (victim / "marker").write_text("intact", encoding="utf-8")
+        reqs = tmp_path / "requirements-ocr.txt"
+        reqs.write_text("surya-ocr==0.17.1", encoding="utf-8")
+
+        monkeypatch.setattr(ss, "SURYA_VENV", victim)
+        monkeypatch.setattr(ss, "OCR_REQUIREMENTS", reqs)
+        monkeypatch.setattr(ss, "_online", lambda timeout=3.0: False)
+
+        report = ss.Report()
+        ss._rebuild_surya(report, 0.0, "test")
+
+        step = report.steps[-1]
+        assert (victim / "marker").is_file(), "deleted an environment it could not rebuild"
+        assert step.status is ss.Status.MISSING
+        assert not step.blocking, "no OCR is a degraded install, not a failed one"
+        assert "offline" in step.detail.lower()
+
+    def test_it_says_what_still_works_without_ocr(self):
+        """Scanned pages are skipped; PDFs with a text layer still process."""
+        import inspect
+
+        from tools import system_setup as ss
+
+        source = inspect.getsource(ss._rebuild_surya)
+        assert "text layer" in source
