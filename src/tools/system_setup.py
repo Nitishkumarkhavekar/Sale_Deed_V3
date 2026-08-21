@@ -739,6 +739,39 @@ def verify_extraction_model(report: Report) -> None:
         "This installer never downloads a substitute model."))
 
 
+def verify_prompt(report: Report) -> None:
+    """The extraction prompt. Small, required, and not downloadable.
+
+    1.4 KB of text that tells the fine-tuned model what to return and in what
+    shape. It is application logic rather than a weight, but it lives under
+    `models/` and was therefore swept up by the rule that keeps 37 GB of
+    checkpoints out of the repository - so a fresh clone had everything except
+    this, passed setup, passed preflight, and failed at the first extraction
+    with nothing on screen to connect the two.
+
+    Checked here because it is the kind of absence that has to be found at
+    install time: at run time it surfaces as the model returning nothing
+    useful, which reads as a model problem.
+    """
+    started = time.monotonic()
+    prompt = paths.PROMPT_FILE
+    if prompt.is_file() and prompt.stat().st_size > 0:
+        report.add(Step("Extraction prompt", Status.FOUND,
+                        f"{prompt.name} ({prompt.stat().st_size:,} bytes)",
+                        time.monotonic() - started))
+        return
+    report.add(Step(
+        "Extraction prompt", Status.FAILED,
+        "missing - extraction cannot run without it",
+        time.monotonic() - started,
+        f"Expected at: {prompt}\n"
+        "It ships with the repository. If this is a clone, the file should "
+        "already be there - restore it with:\n"
+        '    git checkout -- "models/saledeed main/prompt_v6_short.txt"\n'
+        "It is not downloadable and no substitute will do: the model was "
+        "fine-tuned against this exact prompt."))
+
+
 def ensure_translation(report: Report, install: bool) -> None:
     started = time.monotonic()
     base = paths.TRANSLATOR_DIR
@@ -1190,6 +1223,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_configuration(report, dsn, install, created_database)
     ensure_runtime(report, install)
     verify_extraction_model(report)
+    verify_prompt(report)
     ensure_vllm(report, install, report.system)
     ensure_translation(report, install)
     ensure_ocr(report, install)

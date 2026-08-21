@@ -1,0 +1,15 @@
+# Sale Deed AI - line-ending policy.
+#
+# Git normally converts line endings on checkout. For source that is harmless.
+# For the extraction prompt it is not: the model was fine-tuned against that
+# exact text, and a checkout on another machine that turned its 19 bare LFs
+# into CRLFs would hand the model a different prompt to the one it was trained
+# on - silently, and only on the second machine.
+#
+# Matched by basename because the folder it lives in has a space in it, which
+# .gitattributes has no reliable way to escape. The name is unique in the tree.
+prompt_v6_short.txt -text
+
+# Batch files are read by cmd.exe, which needs CRLF. Checked out with CRLF on
+# every platform, so a clone made on Linux still produces a runnable installer.
+*.bat text eol=crlf
