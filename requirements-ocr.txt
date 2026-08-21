@@ -1,0 +1,33 @@
+# Sale Deed AI - the OCR environment.
+#
+# Surya lives in its own Python 3.12 interpreter under models/SuryaOCR/venv_new,
+# separate from requirements.txt, because it pins transformers==4.57.1 against
+# everything the application needs. Merging the two is what makes an OCR upgrade
+# break extraction.
+#
+# A virtual environment records the absolute paths it was built at, so this one
+# cannot be copied between machines - it has to be built where it will run.
+# System Setup rebuilds it from this file when the interpreter is present but
+# `import surya` fails, which is exactly what a copied folder looks like.
+#
+#     py -3.12 -m venv "models/SuryaOCR/venv_new"
+#     "models/SuryaOCR/venv_new/Scripts/python.exe" -m pip install -r requirements-ocr.txt
+#
+# Surya downloads its recognition weights on first use, so the machine needs
+# network access once. The weights are not stored in this environment - deleting
+# and rebuilding it loses nothing but the packages.
+
+# CUDA wheels for torch. An extra index rather than the primary one, so
+# everything else still resolves from PyPI, and a machine without an NVIDIA card
+# still gets a working (CPU) torch instead of a resolution failure.
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+# The pair that has to agree. Surya 0.17.1 reads attributes that transformers
+# removed in a later major version, and an unpinned install once resolved past
+# it and failed only after downloading 1.4 GB of models.
+surya-ocr==0.17.1
+transformers==4.57.1
+
+# torch is deliberately left for pip to resolve against the index above:
+# pinning +cu126 exactly would force a 2.5 GB CUDA wheel onto machines that
+# have no NVIDIA card and cannot use it. This machine resolved to 2.13.0+cu126.

@@ -186,19 +186,47 @@ if not exist "%VENV_PY%" (
 
 REM  Present is not the same as working: a half-finished creation, or a folder
 REM  copied from another machine, leaves a .venv whose python.exe cannot run.
-REM  Checked before use so the failure names the environment rather than
-REM  surfacing later as a missing package.
+REM
+REM  Rebuilt rather than reported. A virtual environment records the absolute
+REM  paths it was created at, so the one thing that never works is the thing
+REM  everyone tries - copying the project folder to another machine. That is
+REM  not repairable in place, and telling an operator to delete a hidden
+REM  folder and start again is a step that gets skipped. Nothing is lost:
+REM  everything in .venv comes back from requirements.txt.
 "%VENV_PY%" -c "import sys" >nul 2>&1
 if errorlevel 1 (
+    echo   The .venv here does not run - it was built on another machine.
+    echo   Rebuilding it for this one ...
+    rmdir /s /q ".venv"
+    if exist ".venv" (
+        echo.
+        echo   The old .venv could not be removed. Something is using it.
+        echo   Close any open Python or application window and run this
+        echo   file again.
+        echo.
+        pause
+        exit /b 1
+    )
+    %PYEXE% -m venv ".venv"
+    if errorlevel 1 (
+        echo.
+        echo   The virtual environment could not be recreated.
+        echo   Check that %PYEXE% includes the "venv" module.
+        echo.
+        pause
+        exit /b 1
+    )
+    "%VENV_PY%" -c "import sys" >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo   The rebuilt .venv still does not run. Reinstall Python from
+        echo       https://www.python.org/downloads/
+        echo.
+        pause
+        exit /b 1
+    )
+    echo   Rebuilt: .venv
     echo.
-    echo   .venv exists but its Python does not run. It is probably damaged,
-    echo   or was copied from another machine - a virtual environment records
-    echo   absolute paths and cannot be moved.
-    echo.
-    echo   Delete the .venv folder and run this file again.
-    echo.
-    pause
-    exit /b 1
 )
 
 echo   Using: %VENV_PY%

@@ -561,26 +561,42 @@ the recognised text and the bounding boxes.
 The recognition model is multilingual and takes no language argument, which is
 why there is no OCR language setting.
 
-### Installing it on another machine
+### Moving to another machine
 
-The environment cannot be copied. A virtualenv records the absolute path it was
-built at, so `models/SuryaOCR/venv_new` carried from `D:\saledeed v3` to
-`E:\saledeed v3` leaves an interpreter that starts and then cannot import
-`surya`. Setup reports this as *interpreter present, surya not importable* and
-writes the traceback to `runtime/logs/setup/surya-import.log`.
+The environment cannot be copied, and neither can the application's own
+`.venv`. A virtualenv records the absolute paths it was built at, so a project
+folder carried from one machine to another leaves interpreters that start and
+then cannot find their own packages.
 
-Rebuild it in place on the target machine:
+This is the normal state on a machine set up by copying, not an exotic fault,
+so setup repairs it rather than reporting it:
+
+| Broken | What setup does |
+|---|---|
+| `.venv` will not run | `system_setup.bat` removes it and rebuilds from `requirements.txt` |
+| `import surya` fails | `ensure_ocr` rebuilds `venv_new` from `requirements-ocr.txt` |
+
+Both refuse rather than destroy when they cannot finish the job — a missing
+`requirements-ocr.txt`, no Python 3.12, or a folder something else is holding
+open leaves the existing environment where it is and says why. `--report-only`
+never rebuilds anything.
+
+Only packages are discarded. Surya keeps its recognition weights in the Hugging
+Face cache rather than inside the environment, so a rebuild costs a download of
+the wheels — about 2.5 GB, several minutes — and nothing that cannot be fetched
+again. The machine needs network access once.
+
+To do it by hand:
 
 ```
 rmdir /s /q "models\SuryaOCR\venv_new"
 py -3.12 -m venv "models\SuryaOCR\venv_new"
-"models\SuryaOCR\venv_new\Scripts\python.exe" -m pip install surya-ocr==0.17.1 transformers==4.57.1
+"models\SuryaOCR\venv_new\Scripts\python.exe" -m pip install -r requirements-ocr.txt
 ```
 
-Surya downloads its recognition weights on first use, so the machine needs
-network access once. Without this environment scanned pages are skipped and
-only PDFs with a real text layer are processed — most Kaveri deeds are scans,
-so this is not optional in practice.
+Without this environment scanned pages are skipped and only PDFs carrying a real
+text layer are processed — most Kaveri deeds are scans, so this is not optional
+in practice.
 
 ### Cleanup
 

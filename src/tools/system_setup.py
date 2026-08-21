@@ -763,24 +763,120 @@ def ensure_translation(report: Report, install: bool) -> None:
                     time.monotonic() - started))
 
 
-def ensure_ocr(report: Report) -> None:
-    """Surya OCR, in its own interpreter.
+#: Where the OCR environment is declared. Version-controlled, unlike the
+#: environment itself, so a rebuild on another machine installs the same pair
+#: of packages rather than whatever pip resolves that day.
+OCR_REQUIREMENTS = paths.ROOT / "requirements-ocr.txt"
+
+#: The interpreter is built here. `venv/` is the older location, still accepted
+#: when it works, never created.
+SURYA_VENV = paths.SURYA_DIR / "venv_new"
+
+
+def _surya_interpreter() -> Path | None:
+    return next(
+        (paths.SURYA_DIR / rel
+         for rel in ("venv_new/Scripts/python.exe", "venv/Scripts/python.exe")
+         if (paths.SURYA_DIR / rel).is_file()), None)
+
+
+def _rebuild_surya(report: Report, started: float, why: str) -> None:
+    """Build the OCR environment where it will run.
+
+    A virtualenv records the absolute paths it was created at, so the one thing
+    that never works is the thing everyone tries: copying the project folder to
+    another machine. The interpreter starts and then cannot find its own
+    packages. That is not repairable in place and it is not worth asking an
+    operator to diagnose - it is worth rebuilding, which is what this does.
+
+    Only the packages are discarded. Surya keeps its recognition weights in the
+    Hugging Face cache, not in here, so a rebuild costs a download of the
+    wheels and nothing that cannot be fetched again.
+    """
+    if not OCR_REQUIREMENTS.is_file():
+        report.add(Step("OCR (Surya)", Status.MISSING,
+                        f"{why} - and {OCR_REQUIREMENTS.name} is missing",
+                        time.monotonic() - started,
+                        "Restore requirements-ocr.txt from the repository, then "
+                        "run this file again."))
+        return
+
+    code, _ = _run(["py", "-3.12", "-c", "import sys"], timeout=25)
+    if code != 0:
+        report.add(Step("OCR (Surya)", Status.MISSING,
+                        f"{why} - no Python 3.12 to rebuild with",
+                        time.monotonic() - started,
+                        "winget install Python.Python.3.12, then run this "
+                        "file again."))
+        return
+
+    print(f"      rebuilding the OCR environment ({why}) - this downloads "
+          "about 2.5 GB and takes several minutes")
+    if SURYA_VENV.exists():
+        shutil.rmtree(SURYA_VENV, ignore_errors=True)
+        if SURYA_VENV.exists():  # a file inside was locked by a running process
+            report.add(Step("OCR (Surya)", Status.FAILED,
+                            f"{why} - the old environment could not be removed",
+                            time.monotonic() - started,
+                            "Something is using it. Close the application and "
+                            "any Python window, then run this file again."))
+            return
+
+    code, out = _run(["py", "-3.12", "-m", "venv", str(SURYA_VENV)], timeout=600)
+    if code != 0:
+        path = _log_output("surya-rebuild", out)
+        report.add(Step("OCR (Surya)", Status.FAILED,
+                        "could not create the OCR environment",
+                        time.monotonic() - started, f"Full output: {path}"))
+        return
+
+    python = SURYA_VENV / "Scripts" / "python.exe"
+    _run([str(python), "-m", "pip", "install", "--upgrade", "pip"], timeout=600)
+    code, out = _run([str(python), "-m", "pip", "install", "-r",
+                      str(OCR_REQUIREMENTS)], timeout=3600)
+    if code != 0:
+        path = _log_output("surya-rebuild", out)
+        report.add(Step("OCR (Surya)", Status.FAILED,
+                        "OCR packages did not install",
+                        time.monotonic() - started,
+                        f"Full output: {path}\n"
+                        "Most often no network, or a proxy blocking "
+                        "download.pytorch.org."))
+        return
+
+    code, out = _run([str(python), "-c", "import surya"], timeout=300)
+    if code != 0:
+        path = _log_output("surya-import", out)
+        report.add(Step("OCR (Surya)", Status.FAILED,
+                        "rebuilt, but surya still will not import",
+                        time.monotonic() - started, f"Full output: {path}"))
+        return
+
+    report.add(Step("OCR (Surya)", Status.INSTALLED,
+                    "rebuilt for this machine, via venv_new",
+                    time.monotonic() - started))
+
+
+def ensure_ocr(report: Report, install: bool = False) -> None:
+    """Surya OCR, in its own interpreter - rebuilt here when it will not run.
 
     Tesseract, Poppler and Ghostscript are **not** used and are not installed.
     Surya handles Kannada, which is the reason it was chosen; PyMuPDF covers
     everything Poppler and Ghostscript would have.
     """
     started = time.monotonic()
-    interpreter = next(
-        (paths.SURYA_DIR / rel
-         for rel in ("venv_new/Scripts/python.exe", "venv/Scripts/python.exe")
-         if (paths.SURYA_DIR / rel).is_file()), None)
+    interpreter = _surya_interpreter()
+
     if interpreter is None:
+        if install:
+            _rebuild_surya(report, started, "no interpreter")
+            return
         report.add(Step("OCR (Surya)", Status.MISSING,
                         "no interpreter - scanned pages will be skipped",
                         time.monotonic() - started,
-                        "See docs/DOCUMENTATION.md for the OCR environment"))
+                        "Run this file without --report-only to build it."))
         return
+
     code, out = _run([str(interpreter), "-c", "import surya"], timeout=180)
     if code == 0:
         report.add(Step("OCR (Surya)", Status.FOUND,
@@ -788,19 +884,23 @@ def ensure_ocr(report: Report) -> None:
                         time.monotonic() - started))
         return
 
-    # Say why. This reported "not importable" and threw the traceback away,
-    # which on a machine set up by copying the project from another drive left
-    # the operator with nothing to act on. The last line of a Python traceback
-    # names the missing module or the DLL that would not load.
+    # Present but not working. On a machine set up by copying the project this
+    # is the normal state, not an exotic failure, so it is repaired rather than
+    # reported. The traceback is kept either way - it names the missing module
+    # or the DLL that would not load.
     reason = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()), "")
     path = _log_output("surya-import", out)
+    if install:
+        _rebuild_surya(report, started, "surya would not import")
+        return
+
     report.add(Step("OCR (Surya)", Status.MISSING,
                     f"interpreter present, surya not importable - {reason[:70]}",
                     time.monotonic() - started,
                     f"Full output: {path}\n"
                     "A virtualenv records absolute paths and cannot be copied "
-                    "between machines or drives - it has to be rebuilt in "
-                    "place. See docs/DOCUMENTATION.md, the OCR environment."))
+                    "between machines or drives. Run this file without "
+                    "--report-only and it will be rebuilt for this machine."))
 
 
 # ---------------------------------------------------------------------------
@@ -1092,7 +1192,7 @@ def main(argv: list[str] | None = None) -> int:
     verify_extraction_model(report)
     ensure_vllm(report, install, report.system)
     ensure_translation(report, install)
-    ensure_ocr(report)
+    ensure_ocr(report, install)
 
     ready = True
     if install and not args.skip_tests:
