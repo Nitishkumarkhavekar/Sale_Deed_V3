@@ -9,10 +9,10 @@ REM
 REM  Safe to run again: completed steps are skipped and nothing that was
 REM  already on the machine is removed or reinstalled.
 REM
-REM    system_setup.bat                everything, then launch
-REM    system_setup.bat --report-only  detect and report, change nothing
-REM    system_setup.bat --no-launch    set up but do not start
-REM    system_setup.bat --skip-tests   skip the test suite
+REM    "System Setup.bat"                everything, then launch
+REM    "System Setup.bat" --report-only  detect and report, change nothing
+REM    "System Setup.bat" --no-launch    set up but do not start
+REM    "System Setup.bat" --skip-tests   skip the test suite
 REM
 REM  Engines: llama.cpp serves the quantised model on any card and is what
 REM  runs on a laptop. On a machine with 16 GB or more of VRAM the setup also
@@ -130,7 +130,7 @@ if not defined PYEXE (
         echo   Python was installed but is not visible to this window yet.
         echo   That is normal - PATH changes reach a shell only when it starts.
         echo.
-        echo   Close this window and run system_setup.bat again. It will
+        echo   Close this window and run "System Setup.bat" again. It will
         echo   pick up from here; nothing already done is repeated.
         echo.
         pause

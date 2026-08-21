@@ -159,7 +159,7 @@ def _log_default_dsn_use() -> None:
     logging.getLogger("saledeed.db").warning(
         "SALEDEED_DB_URL is not set; connecting with the built-in development "
         "credential. Write a generated password to .env - "
-        "`system_setup.bat` does this automatically on a new machine.")
+        "`System Setup.bat` does this automatically on a new machine.")
 
 
 _WARNED_DEFAULT_DSN = False

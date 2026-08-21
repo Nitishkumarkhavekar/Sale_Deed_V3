@@ -1,6 +1,6 @@
 """One-command system setup: detect, install what is missing, verify, launch.
 
-    system_setup.bat                 everything, then start the application
+    "System Setup.bat"                 everything, then start the application
     py -3.13 tools/system_setup.py     the same, directly
     ... --report-only                  detect and report, change nothing
     ... --no-launch                    set up but do not start
@@ -151,20 +151,11 @@ def _emit(step: Step) -> None:
     _log(f"{step.status:<10} {step.name:<26} {step.detail}")
 
 
-#: One file per run, so a support request carries the run that failed rather
-#: than every run this machine has ever done. `installation.log` is kept as
-#: the cumulative history - it is what shows a component that has been
-#: failing since the first attempt.
-RUN_LOG = f"system_setup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-
 def _log(message: str) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"{stamp}  {message}\n"
-    for name in ("installation.log", RUN_LOG):
-        with (LOG_DIR / name).open("a", encoding="utf-8") as handle:
-            handle.write(line)
+    with (LOG_DIR / "installation.log").open("a", encoding="utf-8") as handle:
+        handle.write(f"{stamp}  {message}\n")
 
 
 def _log_output(name: str, text: str) -> Path:
@@ -491,13 +482,13 @@ def _report_environment(report: Report) -> None:
     report.add(Step(
         "Environment", Status.MISSING,
         "not a virtual environment - packages would go system-wide",
-        remedy='run system_setup.bat, which builds .venv and uses it'))
+        remedy='run "System Setup.bat", which builds .venv and uses it'))
 
 
 def ensure_packages(report: Report, install: bool) -> None:
     """Install `requirements.txt` into the interpreter running this script.
 
-    Which is the project's own `.venv`: `system_setup.bat` creates it and runs
+    Which is the project's own `.venv`: `System Setup.bat` creates it and runs
     this file with it, so every install here - and every migration, check and
     subprocess below, all of which use `sys.executable` - lands inside it and
     the machine's Python is left as it was found.
@@ -522,14 +513,7 @@ def ensure_packages(report: Report, install: bool) -> None:
                 # unless `psycopg` was imported first, so the probe reports it
                 # missing on a machine where it is installed and working.
                 "psycopg": "psycopg[binary]", "alembic": "alembic",
-                "pystache": "pystache", "pymupdf": "PyMuPDF",
-                # Transliteration of proper nouns. Absent from this list until
-                # now, and the omission was invisible in the worst way: when
-                # the other six import, this function returns before installing
-                # requirements.txt at all, so a machine could pass "6 import
-                # cleanly" with no transliteration and fail only when a deed
-                # with a Kannada name reached the translation stage.
-                "indic_transliteration": "indic-transliteration"}
+                "pystache": "pystache", "pymupdf": "PyMuPDF"}
     missing = [name for module, name in required.items()
                if not _importable(module)]
 
@@ -567,16 +551,6 @@ def ensure_packages(report: Report, install: bool) -> None:
         else f"{len(missing)} installed",
         time.monotonic() - started,
         (out.strip().splitlines()[-1][:100] if still and out.strip() else "")))
-
-
-def _is_gguf(path: Path) -> bool:
-    """GGUF files begin with the four bytes "GGUF". Cheap, and it catches the
-    truncated-copy case that otherwise fails during model load."""
-    try:
-        with path.open("rb") as handle:
-            return handle.read(4) == b"GGUF"
-    except OSError:
-        return False
 
 
 def _importable(module: str) -> bool:
@@ -754,19 +728,6 @@ def verify_extraction_model(report: Report) -> None:
     if gguf:
         largest = max(gguf, key=lambda p: p.stat().st_size)
         size = largest.stat().st_size / 1024 ** 3
-        # Presence is not integrity. A GGUF truncated by a failed copy or an
-        # out-of-space disk is still a file of the right name, and the failure
-        # surfaces minutes later as llama-server exiting during model load.
-        # Four bytes answer it here.
-        if not _is_gguf(largest):
-            report.add(Step(
-                "Extraction model", Status.FAILED,
-                f"{largest.name} is not a valid GGUF ({size:.2f} GB)",
-                time.monotonic() - started,
-                "The file is truncated or corrupt - most often an interrupted "
-                "copy. Copy it again from the source machine and compare sizes. "
-                "This installer never downloads a substitute model."))
-            return
         report.add(Step("Extraction model", Status.FOUND,
                         f"{largest.name} ({size:.2f} GB)",
                         time.monotonic() - started))
@@ -840,216 +801,6 @@ def ensure_ocr(report: Report) -> None:
                     "A virtualenv records absolute paths and cannot be copied "
                     "between machines or drives - it has to be rebuilt in "
                     "place. See docs/DOCUMENTATION.md, the OCR environment."))
-
-
-# ---------------------------------------------------------------------------
-# 4a. Hardware profile
-# ---------------------------------------------------------------------------
-
-#: Where the resolved profile is written for the operator to read.
-HARDWARE_PROFILE = paths.ROOT / "config" / "hardware_profile.json"
-
-
-def write_hardware_profile(report: Report) -> None:
-    """Record the inference configuration this machine resolved to.
-
-    **Generated, not authoritative.** `ai_server/profiles.py` recomputes the
-    profile from measured free VRAM every time the server starts, and that is
-    deliberate: free VRAM is not a property of the machine, it is a property of
-    the moment - another application holding 2 GB changes the right answer. A
-    file pinning `batch_size` and `concurrency` at install time would be wrong
-    the first time anything else used the card, and wrong in the direction that
-    ends in an out-of-memory failure.
-
-    So this is a report, written where an operator can find it and quote it in a
-    support message. Nothing reads it back.
-    """
-    started = time.monotonic()
-    try:
-        from ai_server.hardware import detect
-        from ai_server.profiles import select_profile
-
-        hw = detect()
-        profile = select_profile(paths.REPACKED_DIR, hw)
-    except Exception as exc:  # noqa: BLE001
-        report.add(Step("Hardware profile", Status.MISSING,
-                        f"{type(exc).__name__}: {exc}"[:60],
-                        time.monotonic() - started,
-                        "The application still starts - it resolves this at "
-                        "run time. Only the written record is missing."))
-        return
-
-    gpu = hw.primary_gpu
-    document = {
-        "_generated": ("Written by System Setup for diagnostics. The AI server "
-                       "recomputes this at every start from free VRAM; editing "
-                       "this file changes nothing."),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "gpu": {
-            "vendor": "NVIDIA" if gpu else "none",
-            "name": gpu.name if gpu else None,
-            "vram_gb": round(gpu.total_gib, 2) if gpu else 0,
-            "cuda_version": hw.cuda_version,
-            "driver_version": hw.driver_version,
-        },
-        "cpu": {"name": hw.cpu_name, "physical_cores": hw.physical_cores,
-                "logical_cores": hw.logical_cores,
-                "ram_total_gb": round(hw.ram_total_gib, 1)},
-        "inference": {
-            "device": profile.device,
-            "quantisation": profile.quant.name,
-            "context_tokens": profile.n_ctx,
-            "prompt_capacity_tokens": profile.prompt_capacity,
-            "kv_cache_type": profile.kv_type,
-            "gpu_layers": profile.n_gpu_layers,
-            "concurrency": profile.n_parallel,
-            "threads": profile.n_threads,
-            "estimated_vram_bytes": profile.total_bytes,
-            "budget_bytes": profile.budget_bytes,
-        },
-        "reason": profile.reason,
-        "warnings": list(profile.warnings),
-    }
-    HARDWARE_PROFILE.parent.mkdir(parents=True, exist_ok=True)
-    HARDWARE_PROFILE.write_text(json.dumps(document, indent=2),
-                                encoding="utf-8")
-
-    where = "GPU" if profile.device == "cuda" else "CPU"
-    report.add(Step(
-        "Hardware profile", Status.FOUND,
-        f"{profile.quant.name} on {where}, {profile.n_ctx:,} ctx, "
-        f"{profile.n_parallel} slot(s)",
-        time.monotonic() - started))
-
-
-# ---------------------------------------------------------------------------
-# 4b. Ports
-# ---------------------------------------------------------------------------
-
-
-def resolve_ai_port() -> int:
-    """The port the AI server will bind, resolved the way the launcher does.
-
-    Read from `SALEDEED_AI_URL` and from `.env`, not from a literal here: a
-    second copy of this default is how the installer and the launcher come to
-    disagree about which port the application uses, and the symptom of that
-    disagreement is a UI reporting "AI server offline" against a server that
-    started perfectly well on a different port.
-    """
-    url = os.environ.get("SALEDEED_AI_URL", "").strip()
-    if not url:
-        env_file = paths.ROOT / ".env"
-        if env_file.is_file():
-            try:
-                for line in env_file.read_text(encoding="utf-8",
-                                               errors="replace").splitlines():
-                    line = line.strip().removeprefix("export ").strip()
-                    if line.startswith("SALEDEED_AI_URL="):
-                        url = line.partition("=")[2].strip().strip(chr(34) + chr(39))
-                        break
-            except OSError:
-                url = ""
-    if not url:
-        return 8077
-    tail = url.removeprefix("http://").removeprefix("https://")
-    _, _, port_text = tail.partition(":")
-    try:
-        return int(port_text.split("/")[0]) if port_text else 8077
-    except ValueError:
-        return 8077
-
-
-def _port_free(port: int, host: str = "127.0.0.1") -> bool:
-    """Can we bind it? SO_REUSEADDR is deliberately not set: on Windows it
-    permits binding a port another socket already holds, which would make this
-    probe answer yes to the one case it exists to detect."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind((host, port))
-        except OSError:
-            return False
-    return True
-
-
-def _port_holder(port: int) -> str:
-    """Name the process holding a port, so the operator can judge it.
-
-    Reported, never acted on. Killing whatever happens to hold a port is how an
-    installer takes down somebody's database, and the process here is as likely
-    to be a previous run of this application as anything else.
-    """
-    code, out = _run(["powershell", "-NoProfile", "-Command",
-                      "$c = Get-NetTCPConnection -LocalPort " + str(port) +
-                      " -State Listen -ErrorAction SilentlyContinue | "
-                      "Select-Object -First 1; if ($c) { $p = Get-Process -Id "
-                      "$c.OwningProcess -ErrorAction SilentlyContinue; "
-                      "if ($p) { $p.ProcessName + ' (PID ' + $p.Id + ')' } }"],
-                     timeout=45)
-    if code != 0:
-        return "unknown"
-    holder = out.strip().splitlines()[-1].strip() if out.strip() else ""
-    return holder or "unknown"
-
-
-def ensure_ports(report: Report) -> None:
-    """Check every port the application binds, before it blames the AI server.
-
-    Two, not one. The AI server binds the configured port and hands its
-    inference engine `port + 1` (`server.py`, where LlamaCppEngine and
-    VllmEngine are constructed). Checking only the first passed a machine where
-    the second was taken, and the failure then arrived as llama-server exiting
-    during startup - reported by the window as the AI server being offline,
-    which is the one thing it was not.
-
-    Nothing is killed and nothing is reassigned. A port chosen automatically
-    here would have to be written into `.env` to be honoured, and an installer
-    that silently rewrites the configuration of a working installation is worse
-    than one that reports a conflict and stops.
-    """
-    started = time.monotonic()
-    port = resolve_ai_port()
-    engine_port = port + 1
-
-    def held_by_us(number: int) -> bool:
-        """Our own server answering is the ordinary case when setup runs while
-        the application is open. That is not a conflict."""
-        try:
-            import urllib.request
-
-            with urllib.request.urlopen(
-                    f"http://127.0.0.1:{number}/health", timeout=3) as response:
-                return b"status" in response.read(200).lower()
-        except Exception:  # noqa: BLE001
-            return False
-
-    conflicts = []
-    for number, role in ((port, "AI server"), (engine_port, "inference engine")):
-        if _port_free(number) or held_by_us(number):
-            continue
-        conflicts.append((number, role, _port_holder(number)))
-
-    if not conflicts:
-        report.add(Step("Ports", Status.FOUND,
-                        f"{port} and {engine_port} available",
-                        time.monotonic() - started))
-        return
-
-    detail = ", ".join(f"{number} in use by {holder}"
-                       for number, _role, holder in conflicts)
-    roles = " and ".join(role for _number, role, _holder in conflicts)
-    # Suggest a pair that is clear of both, not `port + 1` - which is the
-    # engine's own port and the reason this check exists.
-    suggestion = port + 13
-    report.add(Step(
-        "Ports", Status.MISSING, detail[:60],
-        time.monotonic() - started,
-        f"The {roles} cannot bind, and the application will report\n"
-        '"AI server offline" when it starts.\n'
-        "Close the process above, or move this application to a free pair by\n"
-        "setting the first of them in .env - the engine takes the next one up:\n"
-        f"    SALEDEED_AI_URL=http://127.0.0.1:{suggestion}\n"
-        "Nothing was killed and nothing was changed for you - the process "
-        "holding it may be one you need."))
 
 
 # ---------------------------------------------------------------------------
@@ -1275,7 +1026,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\n  Not running as administrator, and these need it:")
             for label in needs_admin:
                 print(f"    - {label}")
-            print("  Right-click \"system_setup.bat\" and choose "
+            print("  Right-click \"System Setup.bat\" and choose "
                   "\"Run as administrator\", or install those two by hand.")
             _log(f"not elevated; installs needing admin: {', '.join(needs_admin)}")
 
@@ -1342,8 +1093,6 @@ def main(argv: list[str] | None = None) -> int:
     ensure_vllm(report, install, report.system)
     ensure_translation(report, install)
     ensure_ocr(report)
-    write_hardware_profile(report)
-    ensure_ports(report)
 
     ready = True
     if install and not args.skip_tests:

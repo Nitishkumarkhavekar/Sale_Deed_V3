@@ -84,7 +84,7 @@ opens the window. On shutdown it stops what it started.
 On a machine that has never run this before:
 
 ```
-system_setup.bat
+System Setup.bat
 ```
 
 | Command | Does |
@@ -93,9 +93,9 @@ system_setup.bat
 | `py -3.13 launcher.py --no-ai` | browsing and export, no inference |
 | `py -3.13 launcher.py --headless` | services without the window |
 | `py -3.13 launcher.py --verbose` | follow the AI server's log in this terminal |
-| `system_setup.bat --report-only` | detect and report, change nothing |
-| `system_setup.bat --no-launch` | set up but do not start |
-| `system_setup.bat --skip-tests` | skip the test suite during setup |
+| `System Setup.bat --report-only` | detect and report, change nothing |
+| `System Setup.bat --no-launch` | set up but do not start |
+| `System Setup.bat --skip-tests` | skip the test suite during setup |
 
 ### The operator's workflow
 
@@ -132,11 +132,8 @@ AMD adapter, so a CUDA build is structurally incapable of selecting it.
 
 ## 4. Installation
 
-`system_setup.bat` is a shim; all logic is in `src/tools/system_setup.py`,
+`System Setup.bat` is a shim; all logic is in `src/tools/system_setup.py`,
 because batch is unreadable and untestable at any size worth writing.
-`system_setup.bat` is the same installer under a name without a space, for
-runbooks and unattended installs; it forwards every argument and preserves the
-exit code.
 
 It detects what is already installed, installs only what is missing, and never
 replaces or removes anything already present. Safe to run twice.
@@ -155,51 +152,10 @@ Detect environment
   → install the llama.cpp CUDA runtime
   → install Surya into models/SuryaOCR/venv_new (Python 3.12)
   → install the translation model (~2.5 GB, once)
-  → resolve the inference profile, write config/hardware_profile.json
-  → check the AI server's port is free
   → run the test suite
   → write docs/INSTALLATION_REPORT.md
   → launch
 ```
-
-### Ports
-
-The AI server's port is resolved the way the launcher resolves it - from
-`SALEDEED_AI_URL`, falling back to `http://127.0.0.1:8077` - and never from a
-second copy of the default written into the installer. Two copies of a default
-are how the installer and the launcher come to disagree about which port the
-application uses, and the symptom of that disagreement is a UI reporting *AI
-server offline* against a server that started perfectly well somewhere else.
-
-If the port is occupied the installer names the process holding it and stops
-there. It kills nothing: the holder is as likely to be a previous run of this
-application as a stranger, and an installer that frees ports by force
-eventually takes down something that mattered. It also does not pick another
-port silently - an alternative port only takes effect if it is written into
-`.env`, and rewriting the configuration of a working installation is worse than
-reporting a conflict.
-
-To move the application to another port:
-
-```
-SALEDEED_AI_URL=http://127.0.0.1:8078
-```
-
-### config/hardware_profile.json
-
-Written at every run, read by nothing. It records what this machine resolved
-to - GPU, VRAM, quantisation, context, GPU layers, concurrency, threads, and
-the reason the selector gave - so an operator can quote it in a support
-message.
-
-It is deliberately not a configuration file. `ai_server/profiles.py` recomputes
-the profile from *measured free VRAM* every time the server starts, because
-free VRAM is a property of the moment rather than of the machine: another
-application holding 2 GB changes the right answer. A file that pinned
-concurrency at install time would be wrong the first time anything else used
-the card, and wrong in the direction that ends in an out-of-memory failure.
-The file is gitignored for the same reason - one machine's answer would only
-mislead the next.
 
 ### The model is verified, never downloaded
 
@@ -211,7 +167,7 @@ notice. Setup checks the files are present and correct; it does not fetch them.
 ### Deployment to another machine
 
 Copy the whole project directory, including `models/`, then run
-`system_setup.bat`. `.env` is **not** copied — setup writes a fresh one with a
+`System Setup.bat`. `.env` is **not** copied — setup writes a fresh one with a
 generated password matching the database it creates.
 
 ---
@@ -1103,7 +1059,7 @@ overridable by environment variable for a single run. `.env` at the project root
 is read by every entry point.
 
 **`.env` is never committed.** It is in `.gitignore` because it holds the database
-credential. `system_setup.bat` writes it with a freshly generated 20-character
+credential. `System Setup.bat` writes it with a freshly generated 20-character
 password and restricts it to the installing user.
 
 ### Database

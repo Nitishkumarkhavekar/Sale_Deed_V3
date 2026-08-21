@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import shutil
 import socket
-import urllib.request
 import subprocess
 import sys
 from collections.abc import Callable
@@ -347,61 +346,15 @@ def check_hardware(cfg: LauncherConfig) -> Result:
 
 
 def check_port(cfg: LauncherConfig) -> Result:
-    """The ports the application binds, and who holds them.
-
-    Two ports, not one. The AI server binds `ai_port` and hands its inference
-    engine `ai_port + 1`; checking only the first let a machine start with the
-    engine's port taken, and llama-server then exited during startup while the
-    window reported the AI server as offline.
-
-    A busy port is also only "reuse that server" when it *is* that server. This
-    reported reuse for anything listening at all, so a stranger on the port meant
-    the UI talked to a foreign process and the failure surfaced as "AI server
-    offline" against a server that was never ours. One request to /health
-    separates the two cases.
-    """
-    engine_port = cfg.ai_port + 1
-
-    def listening(number: int) -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.4)
-            return sock.connect_ex((cfg.ai_host, number)) == 0
-
-    def ours(number: int) -> bool:
-        try:
-            with urllib.request.urlopen(
-                    f"http://{cfg.ai_host}:{number}/health", timeout=2) as response:
-                return b"status" in response.read(400).lower()
-        except Exception:  # noqa: BLE001
-            return False
-
-    # Probed once each and remembered. Re-probing filled the listen backlog of
-    # whatever was on the other end, so the third connect was refused and the
-    # port that had just been reported busy read as free - a check that
-    # disagreed with itself inside one call.
-    busy = {number: listening(number) for number in (cfg.ai_port, engine_port)}
-
-    if not any(busy.values()):
-        return _ok(f"ports {cfg.ai_port} and {engine_port} available")
-
-    if busy[cfg.ai_port] and ours(cfg.ai_port):
-        return _warn(f"port {cfg.ai_port} already serves this application "
-                     "- reusing that server",
-                     "Close the other instance if this is unexpected.",
-                     reuse=True)
-
-    taken = [str(number) for number, is_busy in busy.items() if is_busy]
-    return _fail(
-        "port " + " and ".join(taken)
-        + " held by something that is not this application",
-        "Whatever is listening there did not answer /health, so the AI server "
-        "cannot start and the window would report it as offline.\n"
-        "Find the process:\n"
-        f"    Get-NetTCPConnection -LocalPort {','.join(taken)} -State Listen\n"
-        "Close it, or move this application to a free pair in .env - the "
-        "engine takes the next port up:\n"
-        f"    SALEDEED_AI_URL=http://{cfg.ai_host}:{cfg.ai_port + 13}",
-        reuse=False)
+    """A port already in use usually means a previous run did not exit."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.4)
+        free = sock.connect_ex((cfg.ai_host, cfg.ai_port)) != 0
+    if free:
+        return _ok(f"port {cfg.ai_port} available")
+    return _warn(f"port {cfg.ai_port} is already in use - reusing that server",
+                 "Close the other instance if this is unexpected.",
+                 reuse=True)
 
 
 #: Order matters: cheap local checks first, so a broken checkout fails in

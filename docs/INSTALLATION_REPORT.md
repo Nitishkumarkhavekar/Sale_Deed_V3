@@ -1,7 +1,7 @@
 # Installation Report
 
-**Generated:** 2026-08-21T12:06:06
-**Duration:** 29s
+**Generated:** 2026-08-20T18:04:57
+**Duration:** 22s
 
 ## System
 
@@ -37,13 +37,11 @@
 | Visual C++ runtime | found | present | 0.0 |
 | Python 3.12 (OCR) | found | present | 0.1 |
 | Environment | found | project virtualenv .venv | 0.0 |
-| Python packages | found | 7 import cleanly | 2.8 |
+| Python packages | found | 6 import cleanly | 2.4 |
 | Migrations | found | already at head | 1.2 |
 | Configuration | found | .env exists | 0.0 |
 | Inference runtime | found | llama-server.exe | 0.0 |
-| Extraction model | found | deeds-v6_7-f16.gguf (7.24 GB) | 0.1 |
-| vLLM engine | found | ready in models/vllm-env | 19.2 |
+| Extraction model | found | deeds-v6_7-f16.gguf (7.24 GB) | 0.0 |
+| vLLM engine | found | ready in models/vllm-env | 12.8 |
 | Translation model | found | nllb-200-distilled-600M (2.3 GB) | 0.0 |
-| OCR (Surya) | found | via venv_new | 0.1 |
-| Hardware profile | found | Q4_K_M on GPU, 24,576 ctx, 1 slot(s) | 0.5 |
-| Ports | found | 8077 and 8078 available | 0.0 |
+| OCR (Surya) | found | via venv_new | 0.2 |

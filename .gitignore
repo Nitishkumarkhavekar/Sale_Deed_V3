@@ -18,7 +18,7 @@
 models/vllm-env/
 
 # 37 GB: the fine-tuned checkpoints, the GGUFs, Surya, the translator, and
-# Surya's own virtualenv. Installed by system_setup.bat, never committed.
+# Surya's own virtualenv. Installed by System Setup.bat, never committed.
 models/
 
 # 1.1 GB of llama.cpp CUDA binaries and DLLs. A build artefact, not source.
@@ -78,9 +78,3 @@ env/
 Thumbs.db
 desktop.ini
 $RECYCLE.BIN/
-
-# -- Generated per-machine ---------------------------------------------------
-# Written by System Setup so an operator can read what this machine resolved
-# to. Machine-specific by definition, and the AI server recomputes it at every
-# start - committing one machine's answer would only mislead the next.
-config/hardware_profile.json
